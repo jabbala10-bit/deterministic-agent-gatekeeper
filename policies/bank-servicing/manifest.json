@@ -1,0 +1,48 @@
+{
+  "manifest_version": 1,
+  "bundle": "bank-servicing",
+  "principal_type": "Agent",
+  "labels": ["private_data", "untrusted_input"],
+  "action_groups": ["Egress", "Read"],
+  "config_entity_types": {
+    "RecipientGroup": {"member_of": []},
+    "Recipient": {"member_of": ["RecipientGroup"]}
+  },
+  "snapshot_entity_types": {
+    "Account": {"frozen": "bool"}
+  },
+  "tools": {
+    "payments.refund": {
+      "groups": [],
+      "resource": {"type": "Account", "from": "account_id"},
+      "args": {
+        "account_id": {"type": "id"},
+        "amount_minor": {"type": "int", "min": 1, "max": 100000000},
+        "currency": {"type": "enum", "values": ["EUR", "USD"]}
+      },
+      "result_labels": []
+    },
+    "email.send": {
+      "groups": ["Egress"],
+      "resource": {"type": "Recipient", "from": "to"},
+      "args": {
+        "to": {"type": "email"},
+        "subject": {"type": "text", "max_len": 200},
+        "body": {"type": "text", "max_len": 20000}
+      },
+      "result_labels": []
+    },
+    "crm.lookup": {
+      "groups": ["Read"],
+      "resource": {"type": "Customer", "from": "customer_id"},
+      "args": {"customer_id": {"type": "id"}},
+      "result_labels": ["private_data"]
+    },
+    "inbox.read": {
+      "groups": ["Read"],
+      "resource": {"type": "Mailbox", "from": "mailbox_id"},
+      "args": {"mailbox_id": {"type": "id"}},
+      "result_labels": ["untrusted_input"]
+    }
+  }
+}

@@ -1,0 +1,5 @@
+[
+  {"uid": {"type": "RecipientGroup", "id": "allowlisted"}, "attrs": {}, "parents": []},
+  {"uid": {"type": "Recipient", "id": "bank.example"}, "attrs": {}, "parents": [{"type": "RecipientGroup", "id": "allowlisted"}]},
+  {"uid": {"type": "Recipient", "id": "customer.example"}, "attrs": {}, "parents": [{"type": "RecipientGroup", "id": "allowlisted"}]}
+]

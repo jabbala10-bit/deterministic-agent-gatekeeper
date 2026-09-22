@@ -1,0 +1,16 @@
+{
+  "corpus_digest": "sha256:422c0165a5fe92cad49e5ce27f335695d998abfd18beb7ca4900dac840cfe484",
+  "count": 274,
+  "gate": {
+    "canon": 1,
+    "engine": "cedarpy 4.12.0",
+    "gate": "0.1.0",
+    "unicode": "15.0.0"
+  },
+  "policy_hash": "sha256:defcf9fa9e1a8715408733a3c9bcc70179a6c1346e6da6f11206ff61ae6e99b6",
+  "verdicts": {
+    "ALLOW": 93,
+    "DENY": 100,
+    "REQUIRE_APPROVAL": 81
+  }
+}
