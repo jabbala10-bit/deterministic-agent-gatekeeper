@@ -1,5 +1,6 @@
 """Append-only, hash-chained decision log. Each line is the RFC 8785 form of one record, so any
-implementation in any language can recompute every hash from the bytes on disk.
+implementation in any language can recompute every hash from the bytes on disk. Newlines are written
+as LF on every platform, so a log is byte-identical wherever it was produced.
 
 Phase 1 chains records; phase 4 adds Ed25519 signatures (with the decision tokens), which is
 what stops a forger who rewrites inputs, decisions and the whole chain consistently."""
@@ -66,7 +67,7 @@ class DecisionLog:
 
     def append(self, envelope: Envelope, snapshot: Snapshot, decision: Decision) -> dict[str, Any]:
         record = seal(self._seq, self._prev, envelope.to_json(), snapshot.to_json(), decision.to_json())
-        with self.path.open("a", encoding="utf-8") as handle:
+        with self.path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(jcs(record) + "\n")
             handle.flush()
             os.fsync(handle.fileno())

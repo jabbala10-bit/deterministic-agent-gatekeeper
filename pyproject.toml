@@ -5,8 +5,20 @@ description = "A pure, replayable decision core for AI agent tool calls: the mod
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+keywords = ["ai-agents", "authorization", "cedar", "determinism", "policy-as-code", "audit", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
 # The engine version is part of every decision's gate identity, so it is pinned exactly.
 dependencies = ["cedarpy==4.12.0"]
+
+[project.urls]
+Repository = "https://github.com/jabbala10-bit/deterministic-agent-gatekeeper"
+Issues = "https://github.com/jabbala10-bit/deterministic-agent-gatekeeper/issues"
 
 [project.scripts]
 gatekeeper = "gatekeeper.cli:main"

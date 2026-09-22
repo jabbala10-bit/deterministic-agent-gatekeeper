@@ -1,6 +1,6 @@
 BUNDLE := policies/bank-servicing
 
-.PHONY: verify test vectors demo bench mutants
+.PHONY: verify test vectors demo bench mutants identity
 
 verify: test demo
 
@@ -18,3 +18,6 @@ bench:
 
 mutants:
 	uv run python spec/mutants.py
+
+identity:
+	uv run python spec/check_gate_identity.py

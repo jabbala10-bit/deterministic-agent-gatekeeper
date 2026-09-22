@@ -1,5 +1,9 @@
 # Deterministic Agent Gatekeeper
 
+[![verify](https://github.com/jabbala10-bit/deterministic-agent-gatekeeper/actions/workflows/ci.yml/badge.svg)](https://github.com/jabbala10-bit/deterministic-agent-gatekeeper/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](.python-version)
+
 **The model proposes, a pure function disposes, and every decision can be re-derived bit for bit.**
 
 Per-call policy checks in front of agent tools are now table stakes. This project is about the property
@@ -25,6 +29,8 @@ This repository is **phase 1: the pure core**. It contains the canonical action 
 | Identical across separate processes | Fresh processes under `PYTHONHASHSEED` 0, 1, 42 and random reproduce corpus digest `sha256:422c0165…` |
 | Stated intent, not just stable output | The corpus generator refuses to write if the gate disagrees with `spec/oracle.py`, which is written without Cedar |
 | Tests catch real regressions | `make mutants` removes the reason sort, the fail-closed rule, or core purity in a scratch copy; the suite catches all three |
+| Same result on other platforms | CI re-derives the corpus on Linux x86_64, Linux arm64, macOS arm64 and Windows |
+| An upgrade is classified, not absorbed | On Python 3.13 (Unicode 15.1.0) all 274 verdicts and reasons are unchanged while every hash moves. `make identity` reports that as an identity change, not a regression |
 | Latency (1 vCPU sandbox, Python 3.12) | p50 **0.46 ms**, p99 **1.0 ms** per decision. About 0.1 ms per engine evaluation (up to two per decision); the rest is Python hashing |
 
 ## Quickstart
@@ -33,6 +39,7 @@ This repository is **phase 1: the pure core**. It contains the canonical action 
 uv sync
 make verify          # 67 tests (~20 s), then the demo and a replay of its log
 make mutants         # sabotage the core three ways; each must be caught
+make identity        # does this runtime still decide the same way?
 uv run gatekeeper bench
 ```
 
@@ -142,8 +149,10 @@ docs/adr/                ADR-001 … ADR-005
 - **Narrow canonicalisers.** Email addresses are ASCII-only for now, and URLs are refused rather than
   guessed at, until phase 2.
 - **Replay needs the same gate identity.** Hash-exact replay requires the same gate, canonical form,
-  engine and Unicode versions. Records from a different identity are reported separately, and
-  comparing them is phase 5's `diff`.
+  engine and Unicode versions. Python's Unicode version is part of that, so the repo pins 3.12 in
+  `.python-version`, and `make identity` tells you whether a newer runtime changed behaviour (a bug)
+  or only the identity (regenerate the corpus deliberately). Records decided under a different
+  identity are reported separately; comparing them is phase 5's `diff`.
 - **The oracle shares the author's assumptions.** It catches policies that drift from stated intent. It
   cannot catch a wrong intent.
 
@@ -171,3 +180,7 @@ docs/adr/                ADR-001 … ADR-005
 - [ADR-003](docs/adr/ADR-003-canonical-hashing.md): Canonical hashing: RFC 8785 over a float-free domain
 - [ADR-004](docs/adr/ADR-004-fail-closed-on-evaluation-errors.md): Fail closed on any evaluation error; validate at load
 - [ADR-005](docs/adr/ADR-005-separate-policy-configuration-from-runtime-facts.md): Policy configuration and runtime facts travel separately
+
+## License
+
+Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
