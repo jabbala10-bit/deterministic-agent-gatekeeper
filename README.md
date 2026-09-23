@@ -11,20 +11,22 @@ properties that make such a gate trustworthy to an examiner: **determinism you c
 **one canonical action** that is both what was checked and what runs.
 
 - Any past decision re-derives from its record on another machine, hash-exact.
-- Any policy change can be measured against history before it ships (phase 5).
+- Any policy change is measured against history and against a generated request space before it ships.
 - What executes is provably what was checked, enforced at the MCP boundary with a signed token.
 
 In the portfolio, Orchestra AI is the runtime, TrustOS is the enforcement boundary, and the
 Gatekeeper is the decision core that proves it decides the same way every time.
 
-**Phases 1 to 4 are here**: the pure core, the canonicalisers, the session ledger, and the
-enforcement point.
+**Phases 1 to 5 are here**: the pure core, the canonicalisers, the session ledger, the
+enforcement point, and policy CI.
 
 ## What is proven (measured in this repo)
 
 | Exit criterion | Result |
 |---|---|
 | Golden vectors | **401**: 136 ALLOW, 162 DENY, 103 REQUIRE_APPROVAL |
+| A widening policy change fails CI | `gatekeeper diff` moves the auto-refund cap from EUR 200.00 to EUR 200.01 and fails with a **concrete counterexample** at exactly that boundary, mined from the policy's own literal |
+| A tightening names what it would have refused | The same command re-decides recorded ledgers and reports each past action whose verdict moves, by action hash |
 | Enforcement against a server we did not write | The proxy runs in front of the published `@modelcontextprotocol/server-filesystem`: its **14 tools are filtered to the 3** the manifest declares, a sandbox escape never reaches it, and a file lands on disk **only after a human approves that exact call**, once |
 | Execution is the checked action | The gate rebuilds the canonical action from its own record, so the executor is handed `{"amount":"150.00"}` even when the agent wrote `"150.0"`; tokens are single-use, bound to one action, and expire |
 | Signatures catch a coherent forgery | A forger who rewrites an argument, recomputes the decision honestly and re-seals every hash produces a ledger that replays cleanly, and fails signature verification |
@@ -37,12 +39,12 @@ enforcement point.
 | Identical decision hashes across 10k runs | **10,000** randomised decisions reproduce exactly and match an independent oracle |
 | Identical across separate processes | Fresh processes under `PYTHONHASHSEED` 0, 1, 42 and random re-derive corpus digest `sha256:7661a483…` |
 | Stated intent, not just stable output | The corpus generator refuses to write when the gate disagrees with `spec/oracle.py`, which is written without Cedar |
-| Tests catch real regressions | `make mutants` breaks the reason sort, fail-closed, core purity, the session lock, single-use tokens and egress pinning in a scratch copy; the suite catches all six |
+| Tests catch real regressions | `make mutants` breaks the reason sort, fail-closed, core purity, the session lock, single-use tokens, egress pinning and the diff's boundary mining in a scratch copy; the suite catches all seven |
 | Same result on other platforms | CI re-derives the corpus on Linux x86_64, Linux arm64, macOS arm64 and Windows |
 | An upgrade is classified, not absorbed | On Python 3.13 (Unicode 15.1.0) every verdict is unchanged while every hash moves. `make identity` calls that an identity change, not a regression |
 | Latency (1 vCPU sandbox, Python 3.12) | p50 **0.53 ms**, p99 **0.91 ms** per decision, including canonicalisation and up to two engine evaluations |
 
-205 tests, about 26 seconds. The seven that drive a real MCP server skip when `npx` is absent.
+218 tests, about 38 seconds. The seven that drive a real MCP server skip when `npx` is absent.
 
 ## Quickstart
 
@@ -52,6 +54,7 @@ make verify          # tests, then the demo and a replay of its log
 make mutants         # sabotage the core three ways; each must be caught
 make identity        # does this runtime still decide the same way?
 make mcp             # drive a real published MCP server through the proxy (needs npx)
+make diff CANDIDATE=/tmp/candidate    # what would this policy change do?
 ```
 
 `make demo` runs the scripted EU bank-servicing walkthrough and replays its ledger:
@@ -219,6 +222,50 @@ claude mcp add banking -- uv run --directory /path/to/deterministic-agent-gateke
 The proxy is exercised against the real server by `make mcp`; the Claude Code registration above
 follows its documented `claude mcp add` form but has not been run in this repository's CI.
 
+## Before a policy ships
+
+Two questions decide whether a policy change is safe, and `gatekeeper diff` answers both:
+
+```bash
+gatekeeper diff --base policies/bank-servicing --candidate /tmp/candidate \
+                --history spec/history/bank-servicing
+```
+
+**What does it newly permit?** A request space is generated from the manifest: every tool, every enum
+value, every subset of session labels, both approval states, facts present, absent and missing, and
+integer values taken from `{v-1, v, v+1}` for **every literal in either policy set**. Hosts and
+domains come from the bundle's own entities, plus a subdomain, a suffix splice that only looks
+allowlisted, and something unrelated. Each request is decided twice by the real engine.
+
+Moving the auto-refund cap by one cent is therefore caught by construction:
+
+```
+  WIDENING: 16 probe(s) the candidate allows and the base does not
+    - payments.refund {"account_id":"probe-1","amount":{"amount":"200.01","currency":"EUR"}}
+      session: labels none; counters refunded_minor=0; no approval
+      base REQUIRE_APPROVAL ['refund-approved'] -> candidate ALLOW ['refund-auto']
+
+FAIL: this change lets the agent do something it could not do before.
+      If that is intended, say so explicitly with --allow-widening.
+```
+
+**Which past decisions would change?** Recorded ledgers are folded and re-decided against the
+candidate. A ledger's evolution does not depend on policy, so every historical snapshot is re-derived
+exactly and each affected action is named:
+
+```
+history: 17 recorded decisions, 1 would change
+    - sess-demo-001 seq 1 payments.refund: ALLOW -> REQUIRE_APPROVAL ['refund-approved']
+      (action sha256:40970841292e...)
+```
+
+CI runs this on every pull request against the base branch, per bundle. `spec/history/` holds a
+committed, byte-identical session so the historical half always has something to report against; it
+is generated by `make history` from a fixed clock and a published test seed.
+
+This finds widenings. It does not prove their absence outside the enumerated domain: that needs the
+symbolic check, and ADR-010 states exactly what it would take.
+
 ## The five invariants
 
 | # | Invariant | Enforced by | Proven by |
@@ -253,7 +300,7 @@ to write when a computed verdict disagrees with `spec/oracle.py`.
 
 ```
 src/gatekeeper/core/     pure: strictjson (RFC 8785), digest, model, manifest (→ Cedar schema),
-                         url, money, canonical, ledger (fold), bundle, decide
+                         url, money, canonical, ledger (fold), bundle, decide, diff
 src/gatekeeper/shell/    impure: loader, signed event log, session (one writer), gate (clock,
                          reserve/settle, tokens), tokens (Ed25519), executor (address pinning),
                          proxy (MCP), replay, demo
@@ -261,7 +308,7 @@ policies/filesystem/     a bundle for the published MCP filesystem server
 examples/                a minimal MCP server, used by the proxy tests
 policies/bank-servicing/ manifest.json · entities.json (config only) · policies.cedar
 spec/                    oracle · scenarios · bypasses · corpus · gen_vectors · mutants ·
-                         check_gate_identity · vectors/
+                         check_gate_identity · gen_history · vectors/ · history/
 tests/                   one module per concern; invariants named I1–I5
 docs/adr/                ADR-001 … ADR-007
 ```
@@ -284,6 +331,9 @@ docs/adr/                ADR-001 … ADR-007
   and revocation are not implemented, and the ledger is local files with no external anchoring.
 - **The proxy is in the request path.** No rate limiting, no backpressure, no upstream health checks.
 - **Sweeping is manual.** `gatekeeper sweep` releases expired reservations; nothing schedules it.
+- **The policy diff finds widenings, it does not prove their absence.** It enumerates a bounded
+  request space built from the policy's own literals and the bundle's own entities. A widening
+  reachable only outside that domain would pass (ADR-010).
 - **Refusal instead of coverage.** Internationalised local parts and IP literals are refused rather
   than handled. That is over-blocking, and it is measured rather than hidden.
 - **Replay needs the same gate identity.** Gate, canonical form, engine, Unicode and IDNA versions
@@ -307,7 +357,7 @@ docs/adr/                ADR-001 … ADR-007
 | 2 | URL, money and recipient canonicalisers; named templates; known-bypass corpus | **Done** |
 | 3 | Session ledger: labels, reserve→commit budgets, one writer per session | **Done** |
 | 4 | MCP proxy on `tools/call`; signed execution tokens; executor-side IP pinning; reservation sweeper | **Done** |
-| 5 | `replay` and `diff` in CI; symbolic tightening check | A widening PR fails with a concrete counterexample |
+| 5 | `replay` and `diff` in CI; bounded widening check with counterexamples | **Done** (symbolic proof deferred, ADR-010) |
 | 6 | AgentDojo with and without the gate; latency; cross-platform replay matrix | Published numbers, including where it over-blocks |
 
 ## Decisions
@@ -321,6 +371,7 @@ docs/adr/                ADR-001 … ADR-007
 - [ADR-007](docs/adr/ADR-007-named-templates-instead-of-command-strings.md): Named templates instead of canonicalising command languages
 - [ADR-008](docs/adr/ADR-008-session-ledger-with-reserve-then-settle.md): An event-sourced session ledger, with budgets reserved before execution
 - [ADR-009](docs/adr/ADR-009-enforcement-at-the-mcp-boundary.md): Enforce at the MCP boundary, with a signed token per checked action
+- [ADR-010](docs/adr/ADR-010-bounded-differential-now-symbolic-proof-later.md): Bounded differential policy diffing now, symbolic proof as a named upgrade
 
 ## License
 

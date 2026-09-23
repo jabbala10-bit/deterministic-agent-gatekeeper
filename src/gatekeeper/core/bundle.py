@@ -41,13 +41,18 @@ class Evaluation:
 class PolicyBundle:
     """Immutable after construction. Build with PolicyBundle.from_sources()."""
 
-    __slots__ = ("manifest", "policy_hash", "engine", "_policy_set", "_schema", "_base_entities", "_ids")
+    __slots__ = ("manifest", "policy_hash", "engine", "policies_by_id", "config_entities",
+                 "_policy_set", "_schema", "_base_entities", "_ids")
 
     def __init__(self, *, manifest: Manifest, policy_hash: str, engine: str, policy_set: Any,
-                 schema: Any, base_entities: Any, ids: dict[str, str]) -> None:
+                 schema: Any, base_entities: Any, ids: dict[str, str],
+                 policies_by_id: dict[str, Any] | None = None,
+                 config_entities: list[dict[str, Any]] | None = None) -> None:
         self.manifest = manifest
         self.policy_hash = policy_hash
         self.engine = engine
+        self.policies_by_id = policies_by_id or {}
+        self.config_entities = config_entities or []
         self._policy_set = policy_set
         self._schema = schema
         self._base_entities = base_entities
@@ -100,6 +105,8 @@ class PolicyBundle:
             schema=schema,
             base_entities=Entities.from_json_str(json.dumps(config_entities), schema),
             ids=ids,
+            policies_by_id=by_id,
+            config_entities=config_entities,
         )
 
     def evaluate(self, action: CanonicalAction, context: dict[str, Any], facts: tuple[EntityRecord, ...]) -> Evaluation:

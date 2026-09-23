@@ -32,8 +32,9 @@ def _refund(account: str, amount: str, currency: str = "EUR") -> str:
 
 
 def run_demo(bundle: PolicyBundle, directory: str | Path,
-             clock_ns: Callable[[], int] = time.time_ns) -> tuple[list[tuple[str, Any]], Path]:
-    gate = Gate(bundle, directory, clock_ns=clock_ns)
+             clock_ns: Callable[[], int] = time.time_ns,
+             keyring: Any = None) -> tuple[list[tuple[str, Any]], Path]:
+    gate = Gate(bundle, directory, clock_ns=clock_ns, keyring=keyring)
     steps: list[tuple[str, Any]] = []
 
     def act(label: str, tool: str, arguments: str, *, settle: bool = True):

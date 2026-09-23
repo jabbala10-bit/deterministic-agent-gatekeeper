@@ -95,6 +95,35 @@ def _check_decision(report: ReplayReport, index: int, event: Event, state: Any, 
             f"re-derived {fresh['verdict']} {fresh['reasons']}")
 
 
+def history_impact(records: list[dict[str, Any]], candidate: PolicyBundle,
+                   session_id: str) -> list[dict[str, Any]]:
+    """Which recorded decisions would come out differently under a candidate policy.
+
+    The ledger's own evolution does not depend on policy: reservations and settlements are recorded
+    facts. So each historical snapshot can be re-derived and re-decided exactly."""
+    counters = tuple(sorted(candidate.manifest.counters))
+    state = initial_state(session_id, counters)
+    changes: list[dict[str, Any]] = []
+    for record in records:
+        event = Event(record["seq"], record["kind"], record["body"])
+        if event.kind == "decided":
+            envelope = Envelope.from_json(event.body["envelope"])
+            facts = tuple(EntityRecord.from_json(fact) for fact in event.body["facts"])
+            recorded = event.body["decision"]
+            fresh = decide(envelope, state.snapshot(facts), candidate)
+            if fresh.verdict != recorded["verdict"]:
+                changes.append({
+                    "action_hash": recorded["action_hash"],
+                    "candidate": {"reasons": list(fresh.reasons), "verdict": fresh.verdict},
+                    "recorded": {"reasons": recorded["reasons"], "verdict": recorded["verdict"]},
+                    "seq": event.seq,
+                    "session": session_id,
+                    "tool": event.body["envelope"]["tool"],
+                })
+        state = apply(state, event, counters)
+    return changes
+
+
 def snapshot_at(records: list[dict[str, Any]], bundle: PolicyBundle, session_id: str, upto: int) -> Snapshot:
     """The snapshot the session would have produced after `upto` events. Used by tests and tooling."""
     counters = tuple(sorted(bundle.manifest.counters))

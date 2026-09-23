@@ -8,11 +8,12 @@ import statistics
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
-from .core import EntityRecord, Envelope, Snapshot, decide
+from .core import EntityRecord, Envelope, Snapshot, compare, decide
 from .core.ledger import fold
 from .core.strictjson import loads_strict
-from .shell import Gate, McpProxy, UpstreamServer, events_of, load_bundle, read_log, replay
+from .shell import Gate, McpProxy, UpstreamServer, events_of, history_impact, load_bundle, read_log, replay
 from .shell.demo import run_demo
 from .shell.tokens import KeyRing
 
@@ -69,6 +70,73 @@ def cmd_replay(args: argparse.Namespace) -> int:
     if verifier is None:
         print("note: no gate key found, so signatures are not checked")
     return _print_replay(replay(list(read_log(args.ledger)), load_bundle(args.bundle), args.session, verifier))
+
+
+def cmd_diff(args: argparse.Namespace) -> int:
+    """Compare two policy bundles: what the candidate newly permits, and what history it changes."""
+    base, candidate = load_bundle(args.base), load_bundle(args.candidate)
+    report = compare(base, candidate, budget=args.budget, max_examples=args.max_examples)
+
+    histories: list[dict[str, Any]] = []
+    if args.history:
+        for ledger in sorted(Path(args.history).glob("*.jsonl")):
+            records = list(read_log(ledger))
+            report.history_decisions += sum(1 for record in records if record["kind"] == "decided")
+            histories.extend(history_impact(records, candidate, ledger.stem))
+    report.history_changed = histories
+
+    if args.json:
+        print(json.dumps({
+            "history": {"changed": report.history_changed, "decisions": report.history_decisions},
+            "policies": {"added": list(report.structural.added), "changed": list(report.structural.changed),
+                         "removed": list(report.structural.removed)},
+            "policy_hash": {"base": base.policy_hash, "candidate": candidate.policy_hash},
+            "probes": report.probes,
+            "tightened": [d.to_json() for d in report.tightened],
+            "tools": {"added": list(report.tools_added), "removed": list(report.tools_removed)},
+            "widened": [d.to_json() for d in report.widened[:args.max_examples]],
+            "widens": report.widens,
+        }, indent=2, sort_keys=True))
+        return 1 if report.widens and not args.allow_widening else 0
+
+    print(f"policy {base.policy_hash[:19]}... -> {candidate.policy_hash[:19]}...")
+    for label, names in (("added", report.structural.added), ("removed", report.structural.removed),
+                         ("changed", report.structural.changed)):
+        if names:
+            print(f"  policies {label}: {', '.join(names)}")
+    for label, names in (("added", report.tools_added), ("removed", report.tools_removed)):
+        if names:
+            print(f"  tools {label}: {', '.join(names)}")
+    if not report.structural.any and not report.tools_added and not report.tools_removed:
+        print("  no policy changed")
+
+    print(f"\nbounded differential over {report.probes} probes")
+    if report.widened:
+        print(f"  WIDENING: {len(report.widened)} probe(s) the candidate allows and the base does not")
+        for divergence in report.widened[:args.max_examples]:
+            print(f"    - {divergence.describe()}")
+    else:
+        print("  no widening found in the enumerated domain")
+    if report.tightened:
+        print(f"  tightened: {len(report.tightened)} probe(s), for example")
+        for divergence in report.tightened[:args.max_examples]:
+            print(f"    - {divergence.describe()}")
+    if report.reasons_only:
+        print(f"  same verdict, different reasons: {report.reasons_only}")
+
+    if args.history:
+        print(f"\nhistory: {report.history_decisions} recorded decisions, {len(report.history_changed)} would change")
+        for change in report.history_changed[:20]:
+            print(f"    - {change['session']} seq {change['seq']} {change['tool']}: "
+                  f"{change['recorded']['verdict']} -> {change['candidate']['verdict']} "
+                  f"{change['candidate']['reasons']} (action {change['action_hash'][:19]}...)")
+
+    if report.widens and not args.allow_widening:
+        print("\nFAIL: this change lets the agent do something it could not do before.")
+        print("      If that is intended, say so explicitly with --allow-widening.")
+        return 1
+    print("\nPASS" + (" (widening acknowledged)" if report.widens else ""))
+    return 0
 
 
 def cmd_proxy(args: argparse.Namespace) -> int:
@@ -176,6 +244,15 @@ def main(argv: list[str] | None = None) -> int:
     child.add_argument("--session", required=True)
     child.add_argument("--sessions", default=DEFAULT_SESSIONS)
     child.add_argument("--key", help="gate public key file; signatures are checked when it is found")
+
+    child = add("diff", "compare two policy bundles before one of them ships", cmd_diff)
+    child.add_argument("--base", required=True)
+    child.add_argument("--candidate", required=True)
+    child.add_argument("--history", help="directory of session ledgers to re-decide")
+    child.add_argument("--budget", type=int, default=4000)
+    child.add_argument("--max-examples", type=int, default=3)
+    child.add_argument("--allow-widening", action="store_true")
+    child.add_argument("--json", action="store_true")
 
     child = add("proxy", "enforce the gate in front of an unmodified MCP server", cmd_proxy)
     child.add_argument("--session", required=True)

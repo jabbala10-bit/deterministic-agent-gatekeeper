@@ -40,6 +40,12 @@ MUTANTS: list[tuple[str, list[tuple[str, str, str]], list[str]]] = [
          "            egress_pins(tool, action.args, self._resolver)  # refuses non-public addresses",
          "            pass  # refuses non-public addresses"),
     ], ["tests/test_enforcement.py"]),
+    ("policy diff stops mining boundary literals", [
+        ("src/gatekeeper/core/diff.py",
+         "    for literal in literals:\n        for candidate in (literal - 1, literal, literal + 1):\n"
+         "            if low <= candidate <= high:\n                values.add(candidate)\n",
+         ""),
+    ], ["tests/test_diff.py"]),
     ("budget is read outside the session lock", [
         ("src/gatekeeper/shell/gate.py",
          "        with session.transaction():\n            snapshot = session.state.snapshot(facts)\n",

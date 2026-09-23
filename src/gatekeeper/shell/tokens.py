@@ -128,6 +128,12 @@ class KeyRing:
         self.key_id = self.verifier.key_id
 
     @classmethod
+    def from_seed(cls, seed: bytes) -> "KeyRing":
+        """A key derived from a fixed seed, for fixtures that must be byte-identical every time.
+        Never for anything that authorises real work."""
+        return cls(Ed25519PrivateKey.from_private_bytes(seed))
+
+    @classmethod
     def load_or_create(cls, path: str | Path) -> "KeyRing":
         target = Path(path)
         if target.exists():
