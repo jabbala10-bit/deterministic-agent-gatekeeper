@@ -1,7 +1,7 @@
 BUNDLE := policies/bank-servicing
 SESSIONS := .out/sessions
 
-.PHONY: verify test vectors demo bench mutants identity mcp proxy history diff
+.PHONY: verify test vectors demo bench mutants identity mcp proxy history diff evals
 
 verify: test demo
 
@@ -41,3 +41,6 @@ history:
 diff:
 	@test -n "$(CANDIDATE)" || (echo "usage: make diff CANDIDATE=path/to/bundle" && exit 2)
 	uv run gatekeeper diff --base $(BUNDLE) --candidate $(CANDIDATE) --history spec/history/bank-servicing
+
+evals:
+	uv run --group evals python evals/agentdojo_eval.py

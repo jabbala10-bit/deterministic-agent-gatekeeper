@@ -17,14 +17,16 @@ properties that make such a gate trustworthy to an examiner: **determinism you c
 In the portfolio, Orchestra AI is the runtime, TrustOS is the enforcement boundary, and the
 Gatekeeper is the decision core that proves it decides the same way every time.
 
-**Phases 1 to 5 are here**: the pure core, the canonicalisers, the session ledger, the
-enforcement point, and policy CI.
+**All six phases are here**: the pure core, the canonicalisers, the session ledger, the
+enforcement point, policy CI, and the evaluation.
 
 ## What is proven (measured in this repo)
 
 | Exit criterion | Result |
 |---|---|
 | Golden vectors | **401**: 136 ALLOW, 162 DENY, 103 REQUIRE_APPROVAL |
+| Measured against a benchmark I did not design | AgentDojo v1.2 banking, 16 user tasks x 9 injection tasks. With approvals: **all 16 legitimate tasks complete** (7 unattended, 9 needing a human, 10 approvals) and **144/144 attack pairs stopped**, 0 attacker calls executed |
+| The over-blocking is published, not hidden | The strict variant **refuses 12 of 16 legitimate tasks** and stops no attack the approval variant did not already stop. Reading a bill is what forbids paying it |
 | A widening policy change fails CI | `gatekeeper diff` moves the auto-refund cap from EUR 200.00 to EUR 200.01 and fails with a **concrete counterexample** at exactly that boundary, mined from the policy's own literal |
 | A tightening names what it would have refused | The same command re-decides recorded ledgers and reports each past action whose verdict moves, by action hash |
 | Enforcement against a server we did not write | The proxy runs in front of the published `@modelcontextprotocol/server-filesystem`: its **14 tools are filtered to the 3** the manifest declares, a sandbox escape never reaches it, and a file lands on disk **only after a human approves that exact call**, once |
@@ -44,7 +46,8 @@ enforcement point, and policy CI.
 | An upgrade is classified, not absorbed | On Python 3.13 (Unicode 15.1.0) every verdict is unchanged while every hash moves. `make identity` calls that an identity change, not a regression |
 | Latency (1 vCPU sandbox, Python 3.12) | p50 **0.53 ms**, p99 **0.91 ms** per decision, including canonicalisation and up to two engine evaluations |
 
-218 tests, about 38 seconds. The seven that drive a real MCP server skip when `npx` is absent.
+230 tests, about 35 seconds. The seven that drive a real MCP server skip when `npx` is absent,
+and the benchmark replay skips without the `evals` dependency group.
 
 ## Quickstart
 
@@ -55,6 +58,7 @@ make mutants         # sabotage the core three ways; each must be caught
 make identity        # does this runtime still decide the same way?
 make mcp             # drive a real published MCP server through the proxy (needs npx)
 make diff CANDIDATE=/tmp/candidate    # what would this policy change do?
+make evals           # replay AgentDojo's trajectories through the gate
 ```
 
 `make demo` runs the scripted EU bank-servicing walkthrough and replays its ledger:
@@ -222,6 +226,40 @@ claude mcp add banking -- uv run --directory /path/to/deterministic-agent-gateke
 The proxy is exercised against the real server by `make mcp`; the Claude Code registration above
 follows its documented `claude mcp add` form but has not been run in this repository's CI.
 
+## What it costs and what it buys
+
+The only useful evaluation reports both sides. `evals/` replays AgentDojo's own ground-truth
+trajectories through the gate: for each user task the calls a correct agent makes, and for each
+injection task the calls the attacker wants, run in the same session so the injection arrives the
+way it really does, through a tool result.
+
+| | approval variant | strict variant |
+|---|---|---|
+| legitimate tasks completed with no human | 7 | 4 |
+| legitimate tasks needing a human | 9 | 0 |
+| **legitimate tasks blocked outright** | **0** | **12** |
+| approvals asked of the human | 10 | 2 |
+| attack pairs stopped | 144/144 | 144/144 |
+| attacker calls that executed | 0 | 0 |
+
+**The strict variant costs three quarters of the workload and buys nothing here.** Forbidding
+sensitive actions once a session has read untrusted content sounds like the right guardrail until
+you notice that paying a bill means reading the bill first. That is the finding worth taking from
+this project, and it is why the shipped default escalates to a human instead of refusing.
+
+The attack column reads perfectly because every injection in this suite ends in a payment to an
+account the user has never paid, or a password change, and the policy requires a human for both. An
+attacker who could route money to an already-known payee under the cap would not be stopped.
+`evals/RESULTS.md` carries that caveat and the rest; CI regenerates it and fails if it drifts.
+
+Latency, on one vCPU: `decide()` runs in about 0.3 ms, a durable append about 0.1 ms, and a full
+submission about 1.8 ms. The policy engine is not the bottleneck; canonical JSON and hashing are
+roughly a quarter of a submission, the fsync per event about a fifth, and Cedar itself about 7%.
+
+```bash
+make evals   # needs the evals dependency group; writes evals/RESULTS.md
+```
+
 ## Before a policy ships
 
 Two questions decide whether a policy change is safe, and `gatekeeper diff` answers both:
@@ -309,6 +347,8 @@ examples/                a minimal MCP server, used by the proxy tests
 policies/bank-servicing/ manifest.json · entities.json (config only) · policies.cedar
 spec/                    oracle · scenarios · bypasses · corpus · gen_vectors · mutants ·
                          check_gate_identity · gen_history · vectors/ · history/
+evals/                   agentdojo_eval · RESULTS.md · results.json
+policies/agentdojo-banking[-strict]/   two policy variants, measured against each other
 tests/                   one module per concern; invariants named I1–I5
 docs/adr/                ADR-001 … ADR-007
 ```
@@ -331,6 +371,9 @@ docs/adr/                ADR-001 … ADR-007
   and revocation are not implemented, and the ledger is local files with no external anchoring.
 - **The proxy is in the request path.** No rate limiting, no backpressure, no upstream health checks.
 - **Sweeping is manual.** `gatekeeper sweep` releases expired reservations; nothing schedules it.
+- **The evaluation measures decisions, not agents.** It replays recorded trajectories with no model
+  in the loop, so an agent that reaches the same goal by another route is not modelled, and the
+  modelled human always approves correctly.
 - **The policy diff finds widenings, it does not prove their absence.** It enumerates a bounded
   request space built from the policy's own literals and the bundle's own entities. A widening
   reachable only outside that domain would pass (ADR-010).
@@ -358,7 +401,7 @@ docs/adr/                ADR-001 … ADR-007
 | 3 | Session ledger: labels, reserve→commit budgets, one writer per session | **Done** |
 | 4 | MCP proxy on `tools/call`; signed execution tokens; executor-side IP pinning; reservation sweeper | **Done** |
 | 5 | `replay` and `diff` in CI; bounded widening check with counterexamples | **Done** (symbolic proof deferred, ADR-010) |
-| 6 | AgentDojo with and without the gate; latency; cross-platform replay matrix | Published numbers, including where it over-blocks |
+| 6 | AgentDojo replay with and without the gate; latency breakdown; cross-platform replay | **Done** ([results](evals/RESULTS.md)) |
 
 ## Decisions
 
@@ -372,6 +415,7 @@ docs/adr/                ADR-001 … ADR-007
 - [ADR-008](docs/adr/ADR-008-session-ledger-with-reserve-then-settle.md): An event-sourced session ledger, with budgets reserved before execution
 - [ADR-009](docs/adr/ADR-009-enforcement-at-the-mcp-boundary.md): Enforce at the MCP boundary, with a signed token per checked action
 - [ADR-010](docs/adr/ADR-010-bounded-differential-now-symbolic-proof-later.md): Bounded differential policy diffing now, symbolic proof as a named upgrade
+- [ADR-011](docs/adr/ADR-011-evaluate-against-recorded-trajectories.md): Evaluate against recorded trajectories, and publish where it over-blocks
 
 ## License
 

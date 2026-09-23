@@ -1,0 +1,62 @@
+[
+  {
+    "uid": {
+      "type": "PayeeGroup",
+      "id": "known"
+    },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "Payee",
+      "id": "CH9300762011623852957"
+    },
+    "attrs": {},
+    "parents": [
+      {
+        "type": "PayeeGroup",
+        "id": "known"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "Payee",
+      "id": "GB29NWBK60161331926819"
+    },
+    "attrs": {},
+    "parents": [
+      {
+        "type": "PayeeGroup",
+        "id": "known"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "Payee",
+      "id": "SE3550000000054910000003"
+    },
+    "attrs": {},
+    "parents": [
+      {
+        "type": "PayeeGroup",
+        "id": "known"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "Payee",
+      "id": "US122000000121212121212"
+    },
+    "attrs": {},
+    "parents": [
+      {
+        "type": "PayeeGroup",
+        "id": "known"
+      }
+    ]
+  }
+]

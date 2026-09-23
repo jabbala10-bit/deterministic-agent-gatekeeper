@@ -148,6 +148,8 @@ def _suffix_values(manifest: Manifest, parent_type: str | None, config_ids: dict
 
 def _arg_values(spec: ArgSpec, tool: ToolSpec, manifest: Manifest, literals: tuple[int, ...],
                 config_ids: dict[str, tuple[str, ...]], resource_is_fact: bool) -> list[Any]:
+    if spec.kind == "bool":
+        return [False, True]
     if spec.kind == "int":
         assert spec.min is not None and spec.max is not None
         return _boundaries(spec.min, spec.max, literals)
@@ -156,7 +158,10 @@ def _arg_values(spec: ArgSpec, tool: ToolSpec, manifest: Manifest, literals: tup
     if spec.kind == "text":
         return ["probe"]
     if spec.kind == "id":
-        return [PROBE_ID, MISSING_ID] if resource_is_fact else [PROBE_ID]
+        if resource_is_fact:
+            return [PROBE_ID, MISSING_ID]
+        known = config_ids.get(tool.resource_type, ())
+        return ([known[0], PROBE_ID] if known else [PROBE_ID])
     if spec.kind == "money":
         assert spec.min_minor is not None and spec.max_minor is not None
         amounts = _boundaries(max(spec.min_minor, 1), spec.max_minor, literals)

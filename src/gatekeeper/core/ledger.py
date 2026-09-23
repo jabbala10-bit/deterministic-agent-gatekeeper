@@ -202,7 +202,7 @@ def fold(session_id: str, counter_names: Sequence[str], events: Iterable[Event])
 
 def budget_reservation(action: Any, tool: Any) -> dict[str, int]:
     """What a tool's budget declaration reserves for this canonical action."""
-    if tool.budget_counter is None:
+    if tool.budget_counter is None or tool.budget_from not in action.args:
         return {}
     value = action.args[tool.budget_from]
     if tool.budget_field:

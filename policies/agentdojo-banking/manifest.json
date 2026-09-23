@@ -1,0 +1,285 @@
+{
+  "manifest_version": 3,
+  "bundle": "agentdojo-banking",
+  "principal_type": "Agent",
+  "labels": [
+    "untrusted_input"
+  ],
+  "counters": {
+    "moved_minor": {
+      "max": 100000000
+    }
+  },
+  "action_groups": [
+    "Identity",
+    "Ingest",
+    "Money",
+    "Read",
+    "Sensitive"
+  ],
+  "config_entity_types": {
+    "PayeeGroup": {
+      "member_of": []
+    },
+    "Payee": {
+      "member_of": [
+        "PayeeGroup"
+      ]
+    }
+  },
+  "snapshot_entity_types": {},
+  "tools": {
+    "get_iban": {
+      "groups": [
+        "Read"
+      ],
+      "resource": {
+        "type": "Account",
+        "id": "self"
+      },
+      "args": {},
+      "result_labels": []
+    },
+    "get_balance": {
+      "groups": [
+        "Read"
+      ],
+      "resource": {
+        "type": "Account",
+        "id": "self"
+      },
+      "args": {},
+      "result_labels": []
+    },
+    "get_user_info": {
+      "groups": [
+        "Read"
+      ],
+      "resource": {
+        "type": "Account",
+        "id": "self"
+      },
+      "args": {},
+      "result_labels": []
+    },
+    "get_scheduled_transactions": {
+      "groups": [
+        "Read"
+      ],
+      "resource": {
+        "type": "Account",
+        "id": "self"
+      },
+      "args": {},
+      "result_labels": []
+    },
+    "read_file": {
+      "groups": [
+        "Ingest",
+        "Read"
+      ],
+      "resource": {
+        "type": "File",
+        "from": "file_path"
+      },
+      "args": {
+        "file_path": {
+          "type": "id"
+        }
+      },
+      "result_labels": [
+        "untrusted_input"
+      ]
+    },
+    "get_most_recent_transactions": {
+      "groups": [
+        "Ingest",
+        "Read"
+      ],
+      "resource": {
+        "type": "Account",
+        "id": "self"
+      },
+      "args": {
+        "n": {
+          "type": "int",
+          "min": 1,
+          "max": 100,
+          "optional": true
+        }
+      },
+      "result_labels": [
+        "untrusted_input"
+      ]
+    },
+    "send_money": {
+      "groups": [
+        "Money",
+        "Sensitive"
+      ],
+      "resource": {
+        "type": "Payee",
+        "from": "recipient"
+      },
+      "args": {
+        "recipient": {
+          "type": "id"
+        },
+        "amount": {
+          "type": "money",
+          "currencies": [
+            "USD"
+          ],
+          "min_minor": 1,
+          "max_minor": 100000000
+        },
+        "subject": {
+          "type": "text",
+          "max_len": 200
+        },
+        "date": {
+          "type": "id"
+        }
+      },
+      "budget": {
+        "counter": "moved_minor",
+        "from": "amount",
+        "field": "amount_minor"
+      },
+      "result_labels": []
+    },
+    "schedule_transaction": {
+      "groups": [
+        "Money",
+        "Sensitive"
+      ],
+      "resource": {
+        "type": "Payee",
+        "from": "recipient"
+      },
+      "args": {
+        "recipient": {
+          "type": "id"
+        },
+        "amount": {
+          "type": "money",
+          "currencies": [
+            "USD"
+          ],
+          "min_minor": 1,
+          "max_minor": 100000000
+        },
+        "subject": {
+          "type": "text",
+          "max_len": 200
+        },
+        "date": {
+          "type": "id"
+        },
+        "recurring": {
+          "type": "bool"
+        }
+      },
+      "budget": {
+        "counter": "moved_minor",
+        "from": "amount",
+        "field": "amount_minor"
+      },
+      "result_labels": []
+    },
+    "update_scheduled_transaction": {
+      "groups": [
+        "Money",
+        "Sensitive"
+      ],
+      "resource": {
+        "type": "Account",
+        "id": "self"
+      },
+      "args": {
+        "id": {
+          "type": "int",
+          "min": 1,
+          "max": 1000
+        },
+        "recipient": {
+          "type": "id",
+          "optional": true
+        },
+        "amount": {
+          "type": "money",
+          "currencies": [
+            "USD"
+          ],
+          "min_minor": 1,
+          "max_minor": 100000000,
+          "optional": true
+        },
+        "subject": {
+          "type": "text",
+          "max_len": 200,
+          "optional": true
+        },
+        "date": {
+          "type": "id",
+          "optional": true
+        },
+        "recurring": {
+          "type": "bool",
+          "optional": true
+        }
+      },
+      "result_labels": []
+    },
+    "update_password": {
+      "groups": [
+        "Identity",
+        "Sensitive"
+      ],
+      "resource": {
+        "type": "Account",
+        "id": "self"
+      },
+      "args": {
+        "password": {
+          "type": "text",
+          "max_len": 200
+        }
+      },
+      "result_labels": []
+    },
+    "update_user_info": {
+      "groups": [
+        "Identity",
+        "Sensitive"
+      ],
+      "resource": {
+        "type": "Account",
+        "id": "self"
+      },
+      "args": {
+        "city": {
+          "type": "text",
+          "max_len": 100,
+          "optional": true
+        },
+        "first_name": {
+          "type": "text",
+          "max_len": 100,
+          "optional": true
+        },
+        "last_name": {
+          "type": "text",
+          "max_len": 100,
+          "optional": true
+        },
+        "street": {
+          "type": "text",
+          "max_len": 100,
+          "optional": true
+        }
+      },
+      "result_labels": []
+    }
+  }
+}

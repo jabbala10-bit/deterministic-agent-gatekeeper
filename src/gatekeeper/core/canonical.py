@@ -84,9 +84,12 @@ def canonicalize(env: Envelope, manifest: Manifest) -> CanonicalAction:
             # Argument names come from the manifest, never from the agent, so they are safe to cite.
             raise Rejection(f"INVALID_ARGUMENTS:{name}:{err.code}") from None
 
-    resource_id = args[tool.resource_from]
-    if tool.resource_field:
-        resource_id = resource_id[tool.resource_field]
+    if tool.resource_from is None:
+        resource_id = tool.resource_id
+    else:
+        resource_id = args[tool.resource_from]
+        if tool.resource_field:
+            resource_id = resource_id[tool.resource_field]
     if not matches(RESOURCE_ID_RE, resource_id):
         raise Rejection("INVALID_ARGUMENTS:bad_resource_id")
     parents: tuple[tuple[str, str], ...] = ()
@@ -137,6 +140,10 @@ def wire_arguments(tool: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _canonical_value(spec: ArgSpec, value: Any) -> Any:
+    if spec.kind == "bool":
+        if type(value) is not bool:
+            raise Rejection("not_boolean")
+        return value
     if spec.kind == "id":
         if type(value) is not str or ID_RE.match(value) is None:
             raise Rejection("bad_id")

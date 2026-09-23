@@ -11,10 +11,11 @@ from typing import Any
 from .errors import Rejection
 from .money import CURRENCY_EXPONENT
 from .strictjson import MAX_SAFE_INT
-from .syntax import BUNDLE_RE, CURRENCY_RE, ID_RE, NAME_RE, SCHEME_RE, TOOL_RE, TYPE_RE, matches
+from .syntax import (BUNDLE_RE, CURRENCY_RE, ID_RE, NAME_RE, RESOURCE_ID_RE, SCHEME_RE, TOOL_RE,
+                     TYPE_RE, matches)
 
-ARG_KINDS = ("email", "enum", "id", "int", "money", "path", "template", "text", "url")
-PARAM_KINDS = ("enum", "id", "int", "text")  # what a template parameter may be
+ARG_KINDS = ("bool", "email", "enum", "id", "int", "money", "path", "template", "text", "url")
+PARAM_KINDS = ("bool", "enum", "id", "int", "text")  # what a template parameter may be
 RESOURCE_ARG_KINDS = ("email", "id", "path", "template", "url")
 ATTR_KINDS = {"bool": "Boolean", "int": "Long", "string": "String"}
 URL_SCHEMES = ("http", "https")
@@ -23,6 +24,7 @@ _STRING, _LONG = {"type": "String"}, {"type": "Long"}
 # The shape each canonical value takes in the request context. Records are closed, so a policy can
 # only read fields the gate actually puts there.
 _CONTEXT_TYPES: dict[str, Any] = {
+    "bool": {"type": "Boolean"},
     "email": {"type": "Record", "attributes": {"address": _STRING, "domain": _STRING}},
     "int": _LONG,
     "money": {"type": "Record", "attributes": {"amount_minor": _LONG, "currency": _STRING}},
@@ -98,7 +100,7 @@ class ToolSpec:
     name: str
     groups: tuple[str, ...]
     resource_type: str
-    resource_from: str
+    resource_from: str | None
     resource_field: str | None
     parent_type: str | None
     parent_derivation: str | None
@@ -107,9 +109,14 @@ class ToolSpec:
     budget_counter: str | None = None
     budget_from: str | None = None
     budget_field: str | None = None
+    resource_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
-        resource: dict[str, Any] = {"from": self.resource_from, "type": self.resource_type}
+        resource: dict[str, Any] = {"type": self.resource_type}
+        if self.resource_from:
+            resource["from"] = self.resource_from
+        if self.resource_id:
+            resource["id"] = self.resource_id
         if self.resource_field:
             resource["field"] = self.resource_field
         if self.parent_type:
@@ -213,27 +220,36 @@ def _parse_tool(name: str, spec: Any, groups: tuple[str, ...], labels: tuple[str
     _require(all(group in groups for group in tool_groups), f"{where}: unknown action group")
 
     resource = spec["resource"]
-    _require(type(resource) is dict and resource.keys() <= {"type", "from", "field", "parents"}
-             and {"type", "from"} <= resource.keys(), f"{where}.resource: bad keys")
-    resource_type, resource_from = resource["type"], resource["from"]
+    _require(type(resource) is dict and resource.keys() <= {"type", "from", "id", "field", "parents"}
+             and "type" in resource, f"{where}.resource: bad keys")
+    _require(("from" in resource) != ("id" in resource),
+             f"{where}.resource: give exactly one of from (derive it from an argument) or id (a fixed resource)")
+    resource_type = resource["type"]
+    resource_from = resource.get("from")
+    resource_id = resource.get("id")
     _require(matches(TYPE_RE, resource_type) and resource_type != principal, f"{where}: bad resource type")
+    if resource_id is not None:
+        _require(matches(RESOURCE_ID_RE, resource_id), f"{where}.resource.id: bad id")
 
-    _require(type(spec["args"]) is dict and len(spec["args"]) > 0, f"{where}.args: expected a non-empty object")
+    _require(type(spec["args"]) is dict, f"{where}.args: expected an object")  # a tool may take none
     args: dict[str, ArgSpec] = {}
     for arg_name in sorted(spec["args"]):
         _require(matches(NAME_RE, arg_name), f"{where}: bad argument name {arg_name!r}")
         args[arg_name] = _parse_arg(spec["args"][arg_name], f"{where}.args.{arg_name}")
-    _require(resource_from in args and args[resource_from].kind in RESOURCE_ARG_KINDS,
-             f"{where}: resource.from must name an argument of kind {RESOURCE_ARG_KINDS}")
+    if resource_from is not None:
+        _require(resource_from in args and args[resource_from].kind in RESOURCE_ARG_KINDS,
+                 f"{where}: resource.from must name an argument of kind {RESOURCE_ARG_KINDS}")
 
     resource_field = resource.get("field")
     record_kinds = {"email", "template", "url"}
-    if args[resource_from].kind in record_kinds:
+    if resource_from is not None and args[resource_from].kind in record_kinds:
         _require(matches(NAME_RE, resource_field), f"{where}: resource.field is required for a record-valued argument")
         allowed = set(args[resource_from].context_type()["attributes"])
         _require(resource_field in allowed, f"{where}: resource.field must be one of {sorted(allowed)}")
     else:
         _require(resource_field is None, f"{where}: resource.field applies to record-valued arguments only")
+    if resource_from is None:
+        _require("parents" not in resource, f"{where}: a fixed resource has no derived parents")
 
     parent_type = parent_derivation = None
     if "parents" in resource:
@@ -261,7 +277,7 @@ def _parse_tool(name: str, spec: Any, groups: tuple[str, ...], labels: tuple[str
                      f"{where}.budget: field must name an integer field of {budget_from}")
     return ToolSpec(name, tool_groups, resource_type, resource_from, resource_field,
                     parent_type, parent_derivation, args, result_labels,
-                    budget_counter, budget_from, budget_field)
+                    budget_counter, budget_from, budget_field, resource_id)
 
 
 def _attr_ok(kind: str, value: Any) -> bool:
