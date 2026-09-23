@@ -24,8 +24,8 @@ from .digest import digest
 from .errors import Rejection
 from .model import Decision, Envelope, Snapshot
 
-GATE_VERSION = "0.2.0"
-CANON_VERSION = 2
+GATE_VERSION = "0.3.0"
+CANON_VERSION = 3
 
 
 def gate_identity(bundle: PolicyBundle) -> dict[str, Any]:
@@ -46,9 +46,9 @@ def build_context(env: Envelope, snap: Snapshot, action: CanonicalAction, action
         "args": context_args(bundle.manifest.tools[action.tool], action.args),
         "now_ms": env.t_ms,
         "session": {
+            "counters": dict(snap.counters),
             "labels": list(snap.labels),
             "ledger_seq": snap.ledger_seq,
-            "refunded_minor": snap.refunded_minor,
         },
     }
     if action_hash in snap.approvals:

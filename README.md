@@ -17,26 +17,28 @@ properties that make such a gate trustworthy to an examiner: **determinism you c
 In the portfolio, Orchestra AI is the runtime, TrustOS is the enforcement boundary, and the
 Gatekeeper is the decision core that proves it decides the same way every time.
 
-**Phases 1 and 2 are here**: the pure core, and the canonicalisers.
+**Phases 1 to 3 are here**: the pure core, the canonicalisers, and the session ledger.
 
 ## What is proven (measured in this repo)
 
 | Exit criterion | Result |
 |---|---|
-| Golden vectors | **400**: 136 ALLOW, 161 DENY, 103 REQUIRE_APPROVAL |
+| Golden vectors | **401**: 136 ALLOW, 162 DENY, 103 REQUIRE_APPROVAL |
+| Budget spent exactly once under load | **100 concurrent EUR 200 refunds against a EUR 500 cap: exactly 2 execute**, 98 escalate, EUR 400 committed |
+| Snapshots are derived, not trusted | Replay folds the ledger and re-derives every snapshot; deleting a settled spend and re-sealing the chain is caught |
 | Known-bypass corpus 100% refused | **85 attempts, 0 reach ALLOW.** 77 are denied outright with an exact reason code; 8 lookalike destinations escalate to a human instead |
 | Equivalence classes collapse | 4 classes (URL, recipient, IDNA, amount): every spelling in a class produces one `action_hash`, and the classes stay distinct |
 | Canonicalisation is idempotent | Property-tested for URLs, plus an exact round trip for money in every supported currency |
 | Differential vs the tool's parser | Canonical URLs are unambiguous to `urllib`; inputs the two read differently are refused outright |
 | Identical decision hashes across 10k runs | **10,000** randomised decisions reproduce exactly and match an independent oracle |
-| Identical across separate processes | Fresh processes under `PYTHONHASHSEED` 0, 1, 42 and random re-derive corpus digest `sha256:fd58730d…` |
+| Identical across separate processes | Fresh processes under `PYTHONHASHSEED` 0, 1, 42 and random re-derive corpus digest `sha256:7661a483…` |
 | Stated intent, not just stable output | The corpus generator refuses to write when the gate disagrees with `spec/oracle.py`, which is written without Cedar |
-| Tests catch real regressions | `make mutants` breaks the reason sort, the fail-closed rule and core purity in a scratch copy; the suite catches all three |
+| Tests catch real regressions | `make mutants` breaks the reason sort, the fail-closed rule, core purity and the session lock in a scratch copy; the suite catches all four |
 | Same result on other platforms | CI re-derives the corpus on Linux x86_64, Linux arm64, macOS arm64 and Windows |
 | An upgrade is classified, not absorbed | On Python 3.13 (Unicode 15.1.0) every verdict is unchanged while every hash moves. `make identity` calls that an identity change, not a regression |
-| Latency (1 vCPU sandbox, Python 3.12) | p50 **0.52 ms**, p99 **0.91 ms** per decision, including canonicalisation and up to two engine evaluations |
+| Latency (1 vCPU sandbox, Python 3.12) | p50 **0.53 ms**, p99 **0.91 ms** per decision, including canonicalisation and up to two engine evaluations |
 
-138 tests, about 23 seconds.
+156 tests, about 24 seconds.
 
 ## Quickstart
 
@@ -47,31 +49,38 @@ make mutants         # sabotage the core three ways; each must be caught
 make identity        # does this runtime still decide the same way?
 ```
 
-`make demo` runs the scripted EU bank-servicing walkthrough and replays its log:
+`make demo` runs the scripted EU bank-servicing walkthrough and replays its ledger:
 
 ```
- #  step                                           verdict           reasons
- 1  Refund EUR 150.00                              ALLOW             refund-auto
- 2  Refund EUR 400.00                              REQUIRE_APPROVAL  refund-approved
- 3  Same refund after a human approved its hash    ALLOW             refund-approved
- 4  Agent nudges it to EUR 450.00 after sign-off   REQUIRE_APPROVAL  refund-approved
- 5  Refund to a frozen account                     DENY              no-refund-to-frozen-account
- 6  Refund to an account the shell never loaded    DENY              EVAL_ERROR:no-refund-to-frozen-account
- 7  Amount sent as the number 100.00               DENY              INVALID_ARGUMENTS:float_not_allowed
- 8  Third decimal place on a EUR amount            DENY              INVALID_ARGUMENTS:amount:too_many_fraction_digits
- 9  Look up the customer in the CRM                ALLOW             reads-allowed
-10  Report from a named template                   ALLOW             reports-allowlisted
-11  Report template no policy permits              DENY              NO_MATCHING_PERMIT
-12  Email the customer (allowlisted domain)        ALLOW             egress-allowlisted-recipient
-13  Fetch an allowlisted host over TLS             ALLOW             egress-allowlisted-host
-14  Injected: fetch the cloud metadata IP          DENY              INVALID_ARGUMENTS:url:ip_literal_not_allowed
-15  Injected: allowlisted host as URL credentials  DENY              INVALID_ARGUMENTS:url:credentials_in_url
-16  Injected: forward statements to an outsider    DENY              no-egress-after-untrusted-with-private
-17  ...even with a human approval bound to it      DENY              no-egress-after-untrusted-with-private
-18  Mail the allowlisted customer, now tainted     DENY              no-egress-after-untrusted-with-private
+ #  step                                                     verdict           reasons
+ 1  Refund EUR 150.00                                        ALLOW             refund-auto
+ 2  Refund EUR 400.00                                        REQUIRE_APPROVAL  refund-approved
+ 3  Same refund once a human approved its hash               ALLOW             refund-approved
+ 4  The same refund a second time (approval was single-use)  REQUIRE_APPROVAL  refund-approved
+ 5  Refund EUR 150.00 with the session cap reached           REQUIRE_APPROVAL  refund-approved
+ 6  Refund to a frozen account                               DENY              no-refund-to-frozen-account
+ 7  Refund to an account the shell never loaded              DENY              EVAL_ERROR:no-refund-to-frozen-account
+ 8  Amount sent as the number 100.00                         DENY              INVALID_ARGUMENTS:float_not_allowed
+ 9  Look up the customer in the CRM                          ALLOW             reads-allowed
+10  Report from a named template                             ALLOW             reports-allowlisted
+11  Report template no policy permits                        DENY              NO_MATCHING_PERMIT
+12  Email the customer (allowlisted domain)                  ALLOW             egress-allowlisted-recipient
+13  Fetch an allowlisted host over TLS                       ALLOW             egress-allowlisted-host
+14  Email the same customer after that fetch                 DENY              no-egress-after-untrusted-with-private
+15  Injected: fetch the cloud metadata IP                    DENY              INVALID_ARGUMENTS:url:ip_literal_not_allowed
+16  Injected: forward statements to an outsider              DENY              no-egress-after-untrusted-with-private
+17  ...even after a human approved that exact action         DENY              no-egress-after-untrusted-with-private
 
-replay PASS: 18/18 decisions re-derived hash-exact; chain intact
+session sess-demo-001: 33 events, labels ['private_data', 'untrusted_input'], counters {'refunded_minor': 55000}
+replay PASS: 17/17 decisions re-derived hash-exact, 17/17 snapshots re-derived from the ledger
 ```
+
+Nothing in that run hand-builds a snapshot. Step 5 escalates because steps 1 and 3 spent the session
+cap; step 4 escalates because the approval from step 3 was single-use; and step 14 is refused because
+the agent's own CRM read and web fetch labelled the session, not because a test set a flag.
+
+Other commands: `gatekeeper submit`, `approve`, `settle`, `state` and `replay` drive a session
+directly, and `gatekeeper schema` prints the Cedar schema generated from the manifest.
 
 ## How a decision is made
 
@@ -124,12 +133,38 @@ The known-bypass corpus lives in `spec/bypasses.py` and every row is a golden ve
 | text, tool | 5 | bidi overrides, NUL bytes, tool-name case variants |
 | snapshot | 3 | an allowlist entry smuggled in as runtime state |
 
+## The session ledger
+
+A session is an append-only, hash-chained event log, and its snapshot is a pure fold over those
+events. Nothing about a session is taken on the caller's word.
+
+| Event | Effect on the fold |
+|---|---|
+| `session_opened` | fixes the principal |
+| `decided` | records the envelope, the facts the shell loaded and the decision |
+| `reserved` | holds a budget against the cap before the tool runs, keyed by the deciding event |
+| `settled` | commits the reservation and applies the tool's result labels, or releases it and applies nothing |
+| `approval_granted` / `approval_consumed` | a human approval appears, and is spent by the ALLOW that used it |
+
+Three properties fall out of that shape:
+
+- **A budget cannot be spent twice.** The reservation happens inside the same lock as the budget
+  read, so an allowed-but-unexecuted refund already counts. 100 concurrent EUR 200 refunds against a
+  EUR 500 cap let exactly two through.
+- **Labels are earned.** They come from the manifest's `result_labels` for the tool that actually
+  ran, applied on commit. A caller cannot keep a session clean by forgetting to mention what it did.
+- **History cannot be edited.** Replay folds the ledger from the beginning and re-derives every
+  snapshot, so deleting a settled spend and re-sealing the whole chain is still caught.
+
+Counters are declared in the manifest and each tool names the argument that feeds one, so the core
+knows nothing about refunds (ADR-008).
+
 ## The five invariants
 
 | # | Invariant | Enforced by | Proven by |
 |---|---|---|---|
 | 1 | **Purity**: `decide()` does no I/O, reads no clock, draws no randomness | `core/` imports nothing that can; time and state enter as recorded inputs | AST lint over `core/`; fresh-process corpus replays |
-| 2 | **Replayability**: every record re-derives to the same decision hash | Records carry the full envelope, snapshot, policy hash and gate identity | 400 golden vectors; demo-log replay; forged-log tests |
+| 2 | **Replayability**: every decision re-derives, and every snapshot is re-derived from the session's own events | Hash-chained ledger; the snapshot is a pure fold plus the recorded facts | 401 golden vectors; demo-ledger replay; forged and truncated ledgers |
 | 3 | **Check equals execute**: only the canonical action runs | One parse into typed structure; `action_hash` over it; approvals bind to that hash | Equivalence classes collapse to one hash; `urllib` differential; an approval for EUR 400 does not cover EUR 450 |
 | 4 | **Fail closed**: errors, missing data and unknown tools deny | Any engine diagnostic, `NoDecision`, invalid input or snapshot means DENY with a code | A test where the raw engine says Allow and the gate says DENY; 85 bypass attempts |
 | 5 | **Monotone guardrails**: no permit or approval overrides a forbid | A forbid short-circuits before the approval path | An approved exfiltration is still denied. The symbolic widening check arrives in phase 5 |
@@ -158,8 +193,9 @@ to write when a computed verdict disagrees with `spec/oracle.py`.
 
 ```
 src/gatekeeper/core/     pure: strictjson (RFC 8785), digest, model, manifest (→ Cedar schema),
-                         url, money, canonical, bundle (stable ids, load-time validation), decide
-src/gatekeeper/shell/    impure: loader, hash-chained log, replay, gate (clock), demo
+                         url, money, canonical, ledger (fold), bundle, decide
+src/gatekeeper/shell/    impure: loader, hash-chained event log, session (one writer), gate (clock,
+                         reserve/settle), replay, demo
 policies/bank-servicing/ manifest.json · entities.json (config only) · policies.cedar
 spec/                    oracle · scenarios · bypasses · corpus · gen_vectors · mutants ·
                          check_gate_identity · vectors/
@@ -169,9 +205,13 @@ docs/adr/                ADR-001 … ADR-007
 
 ## Limitations (deliberate, and on the roadmap)
 
-- **No ledger yet.** Snapshots are built by hand in the demo and tests. Session labels are coarse by
-  design: once tainted, a session stays tainted. Finer-grained approaches exist, including FIDES and
-  CaMeL. Over-blocking will be measured in phase 6, not hidden.
+- **Session labels are coarse.** Once tainted, a session stays tainted; there is no declassification.
+  Finer-grained approaches exist, including FIDES and CaMeL. Over-blocking gets measured in phase 6.
+- **Facts are recorded, not derived.** An account's frozen status comes from outside the ledger, so
+  replay uses the facts recorded in the decision event. That half is evidence, not history.
+- **Budgets are per session, and reservations can leak.** A crashed executor holds budget until its
+  reservation is released; production needs a sweeper, which belongs with phase 4's execution token.
+  Cross-session caps need a shared writer and are not attempted here.
 - **Names are not resolved.** DNS is nondeterministic, so the gate rules on the canonical host and
   the executor must pin the resolved address and refuse private space (phase 4). `127.0.0.1.nip.io`
   is an executor concern by design.
@@ -201,8 +241,8 @@ docs/adr/                ADR-001 … ADR-007
 |---|---|---|
 | 1 | Pure core, RFC 8785 hashing, three verdicts, stable policy ids, replay | **Done** |
 | 2 | URL, money and recipient canonicalisers; named templates; known-bypass corpus | **Done** |
-| 3 | Session ledger: labels, reserve→commit budgets, one writer per session | 100 parallel EUR 200 refunds against a EUR 500 cap: exactly two execute |
-| 4 | MCP proxy on `tools/call`; single-use signed tokens; executor-side IP pinning; approval CLI | Works unmodified with Claude Code; arguments edited after approval are rejected |
+| 3 | Session ledger: labels, reserve→commit budgets, one writer per session | **Done** |
+| 4 | MCP proxy on `tools/call`; signed execution tokens; executor-side IP pinning; reservation sweeper | Works unmodified with Claude Code; arguments edited after approval are rejected |
 | 5 | `replay` and `diff` in CI; symbolic tightening check | A widening PR fails with a concrete counterexample |
 | 6 | AgentDojo with and without the gate; latency; cross-platform replay matrix | Published numbers, including where it over-blocks |
 
@@ -215,6 +255,7 @@ docs/adr/                ADR-001 … ADR-007
 - [ADR-005](docs/adr/ADR-005-separate-policy-configuration-from-runtime-facts.md): Policy configuration and runtime facts travel separately
 - [ADR-006](docs/adr/ADR-006-canonicalise-urls-into-structure.md): Canonicalise URLs into structure, and split the SSRF defence
 - [ADR-007](docs/adr/ADR-007-named-templates-instead-of-command-strings.md): Named templates instead of canonicalising command languages
+- [ADR-008](docs/adr/ADR-008-session-ledger-with-reserve-then-settle.md): An event-sourced session ledger, with budgets reserved before execution
 
 ## License
 

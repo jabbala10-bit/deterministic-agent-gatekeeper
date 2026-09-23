@@ -5,10 +5,12 @@ from .bundle import BundleError, Evaluation, PolicyBundle
 from .canonical import CanonicalAction, canonicalize
 from .decide import CANON_VERSION, GATE_VERSION, build_context, decide, gate_identity
 from .errors import Rejection
+from .ledger import Event, LedgerError, LedgerState, apply, budget_reservation, fold, initial_state
 from .model import VERDICTS, Decision, EntityRecord, Envelope, Snapshot
 
 __all__ = [
     "BundleError", "CANON_VERSION", "CanonicalAction", "Decision", "EntityRecord", "Envelope",
-    "Evaluation", "GATE_VERSION", "PolicyBundle", "Rejection", "Snapshot", "VERDICTS",
-    "build_context", "canonicalize", "decide", "gate_identity",
+    "Evaluation", "Event", "GATE_VERSION", "LedgerError", "LedgerState", "PolicyBundle", "Rejection",
+    "Snapshot", "VERDICTS", "apply", "budget_reservation", "build_context", "canonicalize", "decide",
+    "fold", "gate_identity", "initial_state",
 ]

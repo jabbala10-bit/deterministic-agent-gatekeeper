@@ -98,6 +98,9 @@ class ToolSpec:
     parent_derivation: str | None
     args: dict[str, ArgSpec]
     result_labels: tuple[str, ...]
+    budget_counter: str | None = None
+    budget_from: str | None = None
+    budget_field: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         resource: dict[str, Any] = {"from": self.resource_from, "type": self.resource_type}
@@ -105,12 +108,15 @@ class ToolSpec:
             resource["field"] = self.resource_field
         if self.parent_type:
             resource["parents"] = {"derive": self.parent_derivation, "type": self.parent_type}
-        return {
+        out: dict[str, Any] = {
             "args": {name: spec.to_json() for name, spec in self.args.items()},
             "groups": list(self.groups),
             "resource": resource,
             "result_labels": list(self.result_labels),
         }
+        if self.budget_counter:
+            out["budget"] = {"counter": self.budget_counter, "field": self.budget_field, "from": self.budget_from}
+        return out
 
 
 def _parse_params(spec: Any, where: str) -> dict[str, ArgSpec]:
@@ -169,10 +175,12 @@ def _parse_arg(spec: Any, where: str) -> ArgSpec:
 
 
 def _parse_tool(name: str, spec: Any, groups: tuple[str, ...], labels: tuple[str, ...],
-                principal: str, config_types: dict[str, tuple[str, ...]]) -> ToolSpec:
+                principal: str, config_types: dict[str, tuple[str, ...]],
+                counters: dict[str, int]) -> ToolSpec:
     where = f"tools.{name}"
     _require(matches(TOOL_RE, name), f"{where}: bad tool name")
-    _keys(spec, {"groups", "resource", "args", "result_labels"}, where)
+    _require(type(spec) is dict and spec.keys() <= {"groups", "resource", "args", "result_labels", "budget"}
+             and {"groups", "resource", "args", "result_labels"} <= spec.keys(), f"{where}: bad keys")
     tool_groups = _names(spec["groups"], TYPE_RE, f"{where}.groups")
     _require(all(group in groups for group in tool_groups), f"{where}: unknown action group")
 
@@ -208,8 +216,24 @@ def _parse_tool(name: str, spec: Any, groups: tuple[str, ...], labels: tuple[str
 
     result_labels = _names(spec["result_labels"], NAME_RE, f"{where}.result_labels")
     _require(all(label in labels for label in result_labels), f"{where}: unknown result label")
+
+    budget_counter = budget_from = budget_field = None
+    if "budget" in spec:
+        _keys(spec["budget"], {"counter", "from", "field"}, f"{where}.budget")
+        budget_counter, budget_from, budget_field = (spec["budget"][k] for k in ("counter", "from", "field"))
+        _require(budget_counter in counters, f"{where}.budget: unknown counter")
+        _require(budget_from in args, f"{where}.budget: from must name an argument")
+        kind = args[budget_from].kind
+        if kind == "int":
+            _require(budget_field is None, f"{where}.budget: field applies to record-valued arguments only")
+            _require(args[budget_from].min >= 0, f"{where}.budget: a reserved amount cannot be negative")
+        else:
+            attributes = args[budget_from].context_type().get("attributes", {})
+            _require(matches(NAME_RE, budget_field) and attributes.get(budget_field) == _LONG,
+                     f"{where}.budget: field must name an integer field of {budget_from}")
     return ToolSpec(name, tool_groups, resource_type, resource_from, resource_field,
-                    parent_type, parent_derivation, args, result_labels)
+                    parent_type, parent_derivation, args, result_labels,
+                    budget_counter, budget_from, budget_field)
 
 
 def _attr_ok(kind: str, value: Any) -> bool:
@@ -225,6 +249,7 @@ class Manifest:
     bundle: str
     principal_type: str
     labels: tuple[str, ...]
+    counters: dict[str, int]
     action_groups: tuple[str, ...]
     config_entity_types: dict[str, tuple[str, ...]]
     snapshot_entity_types: dict[str, dict[str, str]]
@@ -232,14 +257,23 @@ class Manifest:
 
     @classmethod
     def parse(cls, obj: Any) -> "Manifest":
-        _keys(obj, {"manifest_version", "bundle", "principal_type", "labels", "action_groups",
+        _keys(obj, {"manifest_version", "bundle", "principal_type", "labels", "counters", "action_groups",
                     "config_entity_types", "snapshot_entity_types", "tools"}, "manifest")
-        _require(obj["manifest_version"] == 2, "manifest_version must be 2")
+        _require(obj["manifest_version"] == 3, "manifest_version must be 3")
         _require(matches(BUNDLE_RE, obj["bundle"]), "bundle: bad name")
         principal = obj["principal_type"]
         _require(matches(TYPE_RE, principal), "principal_type: bad type name")
         labels = _names(obj["labels"], NAME_RE, "labels")
         groups = _names(obj["action_groups"], TYPE_RE, "action_groups")
+
+        _require(type(obj["counters"]) is dict and len(obj["counters"]) > 0, "counters: expected a non-empty object")
+        counters: dict[str, int] = {}
+        for counter_name in sorted(obj["counters"]):
+            _require(matches(NAME_RE, counter_name), f"counters: bad name {counter_name!r}")
+            entry = obj["counters"][counter_name]
+            _keys(entry, {"max"}, f"counters.{counter_name}")
+            _require(type(entry["max"]) is int and 0 < entry["max"] <= MAX_SAFE_INT, f"counters.{counter_name}: bad max")
+            counters[counter_name] = entry["max"]
 
         config: dict[str, tuple[str, ...]] = {}
         _require(type(obj["config_entity_types"]) is dict, "config_entity_types: expected an object")
@@ -262,14 +296,14 @@ class Manifest:
             snapshot_types[type_name] = {a: attrs[a] for a in sorted(attrs)}
 
         _require(type(obj["tools"]) is dict and len(obj["tools"]) > 0, "tools: expected a non-empty object")
-        tools = {name: _parse_tool(name, obj["tools"][name], groups, labels, principal, config)
+        tools = {name: _parse_tool(name, obj["tools"][name], groups, labels, principal, config, counters)
                  for name in sorted(obj["tools"])}
         for tool in tools.values():
             # A derived resource entity must not collide with config or snapshot data.
             if tool.parent_type is not None:
                 _require(tool.resource_type not in config and tool.resource_type not in snapshot_types,
                          f"tools.{tool.name}: a resource with derived parents needs its own entity type")
-        return cls(obj["bundle"], principal, labels, groups, config, snapshot_types, tools)
+        return cls(obj["bundle"], principal, labels, counters, groups, config, snapshot_types, tools)
 
     def to_json(self) -> dict[str, Any]:
         """Normalised form used for hashing: reordering sets in the source never changes it."""
@@ -277,8 +311,9 @@ class Manifest:
             "action_groups": list(self.action_groups),
             "bundle": self.bundle,
             "config_entity_types": {t: {"member_of": list(p)} for t, p in self.config_entity_types.items()},
+            "counters": {name: {"max": limit} for name, limit in self.counters.items()},
             "labels": list(self.labels),
-            "manifest_version": 2,
+            "manifest_version": 3,
             "principal_type": self.principal_type,
             "snapshot_entity_types": {t: dict(a) for t, a in self.snapshot_entity_types.items()},
             "tools": {name: tool.to_json() for name, tool in self.tools.items()},
@@ -307,15 +342,14 @@ class Manifest:
             actions[tool.name] = action
         return {"": {"entityTypes": entity_types, "actions": actions}}
 
-    @staticmethod
-    def _context_type(tool: ToolSpec) -> dict[str, Any]:
+    def _context_type(self, tool: ToolSpec) -> dict[str, Any]:
         return {"type": "Record", "attributes": {
             "action_hash": _STRING,
             "now_ms": _LONG,
             "session": {"type": "Record", "attributes": {
+                "counters": {"type": "Record", "attributes": {name: _LONG for name in self.counters}},
                 "labels": {"type": "Set", "element": _STRING},
                 "ledger_seq": _LONG,
-                "refunded_minor": _LONG,
             }},
             "approval": {"type": "Record", "required": False, "attributes": {"action_hash": _STRING}},
             "args": {"type": "Record", "attributes": {
@@ -328,6 +362,12 @@ class Manifest:
         for label in snap.labels:
             if label not in self.labels:
                 raise Rejection("unknown_label")
+        counters = dict(snap.counters)
+        if sorted(counters) != sorted(self.counters):
+            raise Rejection("counter_mismatch")
+        for name, value in counters.items():
+            if value > self.counters[name]:
+                raise Rejection("counter_over_maximum")
         for entity in snap.entities:
             spec = self.snapshot_entity_types.get(entity.type)
             if spec is None:

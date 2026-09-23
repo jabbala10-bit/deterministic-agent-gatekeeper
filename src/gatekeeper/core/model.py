@@ -128,15 +128,20 @@ class Snapshot:
     session_id: str
     ledger_seq: int
     labels: tuple[str, ...]
-    refunded_minor: int
+    counters: tuple[tuple[str, int], ...]
     approvals: tuple[str, ...]
     entities: tuple[EntityRecord, ...]
 
     def __post_init__(self) -> None:
         if not matches(ID_RE, self.session_id):
             raise ValueError("session_id is not a canonical id")
-        if not _safe_nonnegative(self.ledger_seq) or not _safe_nonnegative(self.refunded_minor):
-            raise ValueError("ledger_seq and refunded_minor must be non-negative safe integers")
+        if not _safe_nonnegative(self.ledger_seq):
+            raise ValueError("ledger_seq must be a non-negative safe integer")
+        names = [name for name, _ in self.counters] if type(self.counters) is tuple else None
+        if names is None or not all(matches(NAME_RE, n) for n in names) or not _strictly_sorted(names):
+            raise ValueError("counters must be sorted, unique, canonically named")
+        if not all(_safe_nonnegative(value) for _, value in self.counters):
+            raise ValueError("counter values must be non-negative safe integers")
         if type(self.labels) is not tuple or not all(matches(NAME_RE, x) for x in self.labels):
             raise ValueError("labels must be a tuple of canonical names")
         if type(self.approvals) is not tuple or not all(matches(HASH_RE, x) for x in self.approvals):
@@ -154,15 +159,16 @@ class Snapshot:
         session_id: str,
         ledger_seq: int = 0,
         labels: tuple[str, ...] | list[str] = (),
-        refunded_minor: int = 0,
+        counters: dict[str, int] | tuple[tuple[str, int], ...] = (),
         approvals: tuple[str, ...] | list[str] = (),
         entities: tuple[EntityRecord, ...] | list[EntityRecord] = (),
     ) -> "Snapshot":
+        pairs = tuple(sorted(counters.items() if type(counters) is dict else counters))
         return cls(
             session_id=session_id,
             ledger_seq=ledger_seq,
             labels=tuple(sorted(set(labels))),
-            refunded_minor=refunded_minor,
+            counters=pairs,
             approvals=tuple(sorted(set(approvals))),
             entities=tuple(sorted(entities, key=lambda e: (e.type, e.id))),
         )
@@ -171,23 +177,25 @@ class Snapshot:
         return {
             "approvals": list(self.approvals),
             "entities": [e.to_json() for e in self.entities],
+            "counters": dict(self.counters),
             "labels": list(self.labels),
             "ledger_seq": self.ledger_seq,
-            "refunded_minor": self.refunded_minor,
             "session_id": self.session_id,
         }
 
     @classmethod
     def from_json(cls, obj: Any) -> "Snapshot":
-        obj = _exact_keys(obj, ("approvals", "entities", "labels", "ledger_seq", "refunded_minor", "session_id"), "snapshot")
+        obj = _exact_keys(obj, ("approvals", "counters", "entities", "labels", "ledger_seq", "session_id"), "snapshot")
         for key in ("approvals", "entities", "labels"):
             if type(obj[key]) is not list:
                 raise ValueError(f"snapshot.{key} must be a list")
+        if type(obj["counters"]) is not dict:
+            raise ValueError("snapshot.counters must be an object")
         return cls(
             session_id=obj["session_id"],
             ledger_seq=obj["ledger_seq"],
             labels=tuple(obj["labels"]),
-            refunded_minor=obj["refunded_minor"],
+            counters=tuple(sorted(obj["counters"].items())),
             approvals=tuple(obj["approvals"]),
             entities=tuple(EntityRecord.from_json(e) for e in obj["entities"]),
         )

@@ -1,4 +1,4 @@
-"""gatekeeper: demo | replay | decide | bench | schema"""
+"""gatekeeper: demo | replay | state | submit | approve | settle | bench | schema"""
 
 from __future__ import annotations
 
@@ -9,54 +9,91 @@ import sys
 import time
 from pathlib import Path
 
-from .core import Envelope, Snapshot, decide
+from .core import EntityRecord, Envelope, Snapshot, decide
+from .core.ledger import fold
 from .core.strictjson import loads_strict
-from .shell import load_bundle, read_log, replay
+from .shell import Gate, events_of, load_bundle, read_log, replay
 from .shell.demo import run_demo
-from .shell.log import DecisionLog
-from .shell.gate import Gate
 
 DEFAULT_BUNDLE = "policies/bank-servicing"
+DEFAULT_SESSIONS = ".out/sessions"
+
+
+def _facts(path: str | None) -> tuple[EntityRecord, ...]:
+    if not path:
+        return ()
+    raw = loads_strict(Path(path).read_text(encoding="utf-8"), max_bytes=1 << 20)
+    return tuple(EntityRecord.from_json(entry) for entry in raw)
 
 
 def _print_replay(report) -> int:
     status = "PASS" if report.ok else "FAIL"
-    print(f"replay {status}: {report.exact}/{report.records} decisions re-derived hash-exact; "
-          f"chain {'intact' if not report.chain_problems else 'BROKEN'}")
+    print(f"replay {status}: {report.exact}/{report.decisions} decisions re-derived hash-exact, "
+          f"{report.snapshots_derived}/{report.decisions} snapshots re-derived from the ledger; "
+          f"chain {'intact' if not report.chain_problems else 'BROKEN'} over {report.records} events")
     if report.policy_mismatch:
-        print(f"  {report.policy_mismatch} records were decided under a different policy bundle (use diff, phase 5)")
+        print(f"  {report.policy_mismatch} decisions were made under a different policy bundle (use diff, phase 5)")
     if report.gate_mismatch:
-        print(f"  {report.gate_mismatch} records were decided by a different gate identity")
-    for problem in report.chain_problems[:5] + report.mismatches[:5]:
+        print(f"  {report.gate_mismatch} decisions were made by a different gate identity")
+    for problem in (report.chain_problems[:5] + report.ledger_problems[:5] + report.mismatches[:5]):
         print(f"  {problem}")
     return 0 if report.ok else 1
 
 
 def cmd_demo(args: argparse.Namespace) -> int:
     bundle = load_bundle(args.bundle)
-    log_path = Path(args.log)
-    log_path.unlink(missing_ok=True)
-    steps = run_demo(bundle, log_path)
+    directory = Path(args.sessions)
+    for stale in directory.glob("*.jsonl"):
+        stale.unlink()
+    steps, path = run_demo(bundle, directory)
     print(f"policy {bundle.policy_hash[:19]}...  engine {bundle.engine}\n")
-    print(f" #  {'step':<46} {'verdict':<17} reasons")
+    print(f" #  {'step':<56} {'verdict':<17} reasons")
     for number, (label, decision) in enumerate(steps, 1):
-        print(f"{number:>2}  {label:<46} {decision.verdict:<17} {', '.join(decision.reasons)}")
-    print(f"\nlog: {log_path}")
-    return _print_replay(replay(list(read_log(log_path)), bundle))
+        print(f"{number:>2}  {label:<56} {decision.verdict:<17} {', '.join(decision.reasons)}")
+    records = list(read_log(path))
+    state = fold(args.session, tuple(sorted(bundle.manifest.counters)), events_of(records))
+    print(f"\nsession {args.session}: {state.seq} events, labels {list(state.labels) or 'none'}, "
+          f"counters {state.counters()}")
+    print(f"ledger: {path}")
+    return _print_replay(replay(records, bundle, args.session))
 
 
 def cmd_replay(args: argparse.Namespace) -> int:
-    return _print_replay(replay(list(read_log(args.log)), load_bundle(args.bundle)))
+    return _print_replay(replay(list(read_log(args.ledger)), load_bundle(args.bundle), args.session))
 
 
-def cmd_decide(args: argparse.Namespace) -> int:
+def cmd_state(args: argparse.Namespace) -> int:
     bundle = load_bundle(args.bundle)
-    snapshot = Snapshot.from_json(loads_strict(Path(args.snapshot).read_text(encoding="utf-8"), max_bytes=1 << 20))
-    gate = Gate(bundle, DecisionLog(args.log) if args.log else None)
-    decision = gate.submit(tool=args.tool, arguments=args.args, principal=args.principal,
-                           session_id=snapshot.session_id, snapshot=snapshot)
-    print(json.dumps(decision.to_json(), indent=2, sort_keys=True))
-    return 0 if decision.verdict == "ALLOW" else 2
+    records = list(read_log(args.ledger))
+    state = fold(args.session, tuple(sorted(bundle.manifest.counters)), events_of(records))
+    print(json.dumps({"approvals": list(state.approvals), "counters": state.counters(),
+                      "labels": list(state.labels), "principal": state.principal,
+                      "reserved": [{"action_hash": a, "counters": dict(d), "reservation": r} for r, a, d in state.reserved],
+                      "seq": state.seq, "session_id": state.session_id}, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_submit(args: argparse.Namespace) -> int:
+    gate = Gate(load_bundle(args.bundle), args.sessions)
+    ticket = gate.submit(session_id=args.session, principal=args.principal, tool=args.tool,
+                         arguments=args.args, facts=_facts(args.facts))
+    print(json.dumps({"decision": ticket.decision.to_json(), "reservation": ticket.reservation},
+                     indent=2, sort_keys=True))
+    return 0 if ticket.verdict == "ALLOW" else 2
+
+
+def cmd_approve(args: argparse.Namespace) -> int:
+    Gate(load_bundle(args.bundle), args.sessions).approve(
+        session_id=args.session, action_hash=args.action_hash, approver=args.approver)
+    print(f"approved {args.action_hash} in {args.session}")
+    return 0
+
+
+def cmd_settle(args: argparse.Namespace) -> int:
+    Gate(load_bundle(args.bundle), args.sessions).settle(
+        session_id=args.session, reservation=args.reservation, outcome=args.outcome)
+    print(f"reservation {args.reservation} {args.outcome}")
+    return 0
 
 
 def cmd_bench(args: argparse.Namespace) -> int:
@@ -83,37 +120,53 @@ def cmd_schema(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="gatekeeper", description="Deterministic Agent Gatekeeper (phase 1)")
+    parser = argparse.ArgumentParser(prog="gatekeeper", description="Deterministic Agent Gatekeeper (phase 3)")
+    parser.add_argument("--bundle", default=DEFAULT_BUNDLE)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("demo", help="run the scripted walkthrough, then replay its log")
-    p.add_argument("--bundle", default=DEFAULT_BUNDLE)
-    p.add_argument("--log", default=".out/demo.jsonl")
-    p.set_defaults(func=cmd_demo)
+    def add(name: str, help_text: str, func):
+        child = sub.add_parser(name, help=help_text)
+        child.add_argument("--bundle", default=DEFAULT_BUNDLE)
+        child.set_defaults(func=func)
+        return child
 
-    p = sub.add_parser("replay", help="re-derive every decision in a log, hash-exact")
-    p.add_argument("log")
-    p.add_argument("--bundle", default=DEFAULT_BUNDLE)
-    p.set_defaults(func=cmd_replay)
+    child = add("demo", "run the scripted walkthrough, then replay its ledger", cmd_demo)
+    child.add_argument("--sessions", default=DEFAULT_SESSIONS)
+    child.add_argument("--session", default="sess-demo-001")
 
-    p = sub.add_parser("decide", help="decide one proposal; exit 0 on ALLOW, 2 otherwise")
-    p.add_argument("--tool", required=True)
-    p.add_argument("--args", required=True, help="raw JSON arguments exactly as the agent sent them")
-    p.add_argument("--snapshot", required=True, help="path to a snapshot JSON file")
-    p.add_argument("--principal", default="support-bot")
-    p.add_argument("--bundle", default=DEFAULT_BUNDLE)
-    p.add_argument("--log")
-    p.set_defaults(func=cmd_decide)
+    child = add("replay", "re-derive every decision and snapshot in a session ledger", cmd_replay)
+    child.add_argument("ledger")
+    child.add_argument("--session", required=True)
 
-    p = sub.add_parser("bench", help="latency of decide() over the golden corpus")
-    p.add_argument("--bundle", default=DEFAULT_BUNDLE)
-    p.add_argument("--vectors", default="spec/vectors/golden.jsonl")
-    p.add_argument("--rounds", type=int, default=20)
-    p.set_defaults(func=cmd_bench)
+    child = add("state", "print the state folded from a session ledger", cmd_state)
+    child.add_argument("ledger")
+    child.add_argument("--session", required=True)
 
-    p = sub.add_parser("schema", help="print the Cedar schema generated from the manifest")
-    p.add_argument("--bundle", default=DEFAULT_BUNDLE)
-    p.set_defaults(func=cmd_schema)
+    child = add("submit", "submit one proposal; exit 0 on ALLOW, 2 otherwise", cmd_submit)
+    child.add_argument("--session", required=True)
+    child.add_argument("--principal", default="support-bot")
+    child.add_argument("--tool", required=True)
+    child.add_argument("--args", required=True, help="raw JSON arguments exactly as the agent sent them")
+    child.add_argument("--facts", help="path to a JSON list of entity records the shell loaded")
+    child.add_argument("--sessions", default=DEFAULT_SESSIONS)
+
+    child = add("approve", "grant a single-use approval bound to an action hash", cmd_approve)
+    child.add_argument("--session", required=True)
+    child.add_argument("--action-hash", required=True)
+    child.add_argument("--approver", default="duty-officer")
+    child.add_argument("--sessions", default=DEFAULT_SESSIONS)
+
+    child = add("settle", "commit or release a reservation once the tool has run", cmd_settle)
+    child.add_argument("--session", required=True)
+    child.add_argument("--reservation", type=int, required=True)
+    child.add_argument("--outcome", choices=("committed", "released"), required=True)
+    child.add_argument("--sessions", default=DEFAULT_SESSIONS)
+
+    child = add("bench", "latency of decide() over the golden corpus", cmd_bench)
+    child.add_argument("--vectors", default="spec/vectors/golden.jsonl")
+    child.add_argument("--rounds", type=int, default=20)
+
+    add("schema", "print the Cedar schema generated from the manifest", cmd_schema)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -30,6 +30,11 @@ MUTANTS: list[tuple[str, list[tuple[str, str, str]], list[str]]] = [
     ("core reads the clock", [
         ("src/gatekeeper/core/decide.py", "import unicodedata\n", "import time\nimport unicodedata\n"),
     ], ["tests/test_invariants.py"]),
+    ("budget is read outside the session lock", [
+        ("src/gatekeeper/shell/gate.py",
+         "        with session.transaction():\n            snapshot = session.state.snapshot(facts)\n",
+         "        snapshot = session.state.snapshot(facts)\n        with session.transaction():\n"),
+    ], ["tests/test_concurrency.py"]),
 ]
 
 

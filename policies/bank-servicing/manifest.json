@@ -1,8 +1,11 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "bundle": "bank-servicing",
   "principal_type": "Agent",
   "labels": ["private_data", "untrusted_input"],
+  "counters": {
+    "refunded_minor": {"max": 100000000}
+  },
   "action_groups": ["Egress", "Read"],
   "config_entity_types": {
     "RecipientGroup": {"member_of": []},
@@ -21,6 +24,7 @@
         "account_id": {"type": "id"},
         "amount": {"type": "money", "currencies": ["EUR", "JPY", "USD"], "min_minor": 1, "max_minor": 100000000}
       },
+      "budget": {"counter": "refunded_minor", "from": "amount", "field": "amount_minor"},
       "result_labels": []
     },
     "email.send": {

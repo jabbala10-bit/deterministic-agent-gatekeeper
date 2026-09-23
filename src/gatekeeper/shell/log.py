@@ -1,9 +1,9 @@
-"""Append-only, hash-chained decision log. Each line is the RFC 8785 form of one record, so any
+"""Append-only, hash-chained event log. Each line is the RFC 8785 form of one sealed event, so any
 implementation in any language can recompute every hash from the bytes on disk. Newlines are written
 as LF on every platform, so a log is byte-identical wherever it was produced.
 
-Phase 1 chains records; phase 4 adds Ed25519 signatures (with the decision tokens), which is
-what stops a forger who rewrites inputs, decisions and the whole chain consistently."""
+Phase 3 chains events; phase 4 adds Ed25519 signatures (with the decision tokens), which is what
+stops a forger who rewrites inputs, recomputes the decisions and re-seals the whole chain."""
 
 from __future__ import annotations
 
@@ -11,17 +11,17 @@ import os
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..core import Decision, Envelope, Snapshot
+from ..core import Event
 from ..core.digest import digest
 from ..core.strictjson import jcs, loads_strict
 
 GENESIS = "sha256:" + "0" * 64
-_BODY_KEYS = ("decision", "envelope", "prev", "seq", "snapshot")
+_BODY_KEYS = ("body", "kind", "prev", "seq")
 
 
-def seal(seq: int, prev: str, envelope: dict[str, Any], snapshot: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
-    body = {"decision": decision, "envelope": envelope, "prev": prev, "seq": seq, "snapshot": snapshot}
-    return {**body, "record_hash": digest("dag/record/v1", body)}
+def seal(event: Event, prev: str) -> dict[str, Any]:
+    body = {"body": dict(event.body), "kind": event.kind, "prev": prev, "seq": event.seq}
+    return {**body, "record_hash": digest("dag/event/v1", body)}
 
 
 def verify_chain(records: list[dict[str, Any]]) -> list[str]:
@@ -30,17 +30,17 @@ def verify_chain(records: list[dict[str, Any]]) -> list[str]:
     for index, record in enumerate(records):
         try:
             body = {key: record[key] for key in _BODY_KEYS}
-            recomputed = digest("dag/record/v1", body)
+            recomputed = digest("dag/event/v1", body)
         except Exception:
-            problems.append(f"record {index}: malformed")
+            problems.append(f"event {index}: malformed")
             prev = None
             continue
         if record["seq"] != index:
-            problems.append(f"record {index}: sequence gap")
+            problems.append(f"event {index}: sequence gap")
         if record["prev"] != prev:
-            problems.append(f"record {index}: broken link to previous record")
+            problems.append(f"event {index}: broken link to previous event")
         if record.get("record_hash") != recomputed:
-            problems.append(f"record {index}: record hash does not match contents")
+            problems.append(f"event {index}: record hash does not match contents")
         prev = record.get("record_hash")
     return problems
 
@@ -52,24 +52,36 @@ def read_log(path: str | Path) -> Iterator[dict[str, Any]]:
                 yield loads_strict(line, max_bytes=4 << 20)
 
 
-class DecisionLog:
+def events_of(records: list[dict[str, Any]]) -> list[Event]:
+    return [Event(record["seq"], record["kind"], record["body"]) for record in records]
+
+
+class EventLog:
+    """One file, one chain. Callers hold the session lock; this class only appends."""
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._seq, self._prev = 0, GENESIS
+        self.records: list[dict[str, Any]] = []
+        self._prev = GENESIS
         if self.path.exists():
-            records = list(read_log(self.path))
-            problems = verify_chain(records)
+            self.records = list(read_log(self.path))
+            problems = verify_chain(self.records)
             if problems:
                 raise ValueError(f"refusing to append to a broken chain: {problems[0]}")
-            if records:
-                self._seq, self._prev = records[-1]["seq"] + 1, records[-1]["record_hash"]
+            if self.records:
+                self._prev = self.records[-1]["record_hash"]
 
-    def append(self, envelope: Envelope, snapshot: Snapshot, decision: Decision) -> dict[str, Any]:
-        record = seal(self._seq, self._prev, envelope.to_json(), snapshot.to_json(), decision.to_json())
+    @property
+    def seq(self) -> int:
+        return len(self.records)
+
+    def append(self, event: Event) -> dict[str, Any]:
+        record = seal(event, self._prev)
         with self.path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(jcs(record) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        self._seq, self._prev = self._seq + 1, record["record_hash"]
+        self.records.append(record)
+        self._prev = record["record_hash"]
         return record
