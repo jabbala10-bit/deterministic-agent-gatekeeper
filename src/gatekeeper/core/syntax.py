@@ -10,6 +10,8 @@ BUNDLE_RE = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 POLICY_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 HASH_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 LOCAL_PART_RE = re.compile(r"[A-Za-z0-9._%+-]{1,64}\Z")
+CURRENCY_RE = re.compile(r"[A-Z]{3}\Z")
+SCHEME_RE = re.compile(r"[a-z]{3,8}\Z")
 DOMAIN_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 
 

@@ -1,20 +1,35 @@
-"""Tool manifest: the single source of truth for arguments, resources and session labels.
+"""Tool manifest: the single source of truth for arguments, resources, templates and labels.
 
-The Cedar schema is generated from it, so every policy is type-checked at load time against
-exactly the request context the gate will build."""
+The Cedar schema is generated from it, so every policy is type-checked at load time against exactly
+the request context the gate will build."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .errors import Rejection
+from .money import CURRENCY_EXPONENT
 from .strictjson import MAX_SAFE_INT
-from .syntax import BUNDLE_RE, ID_RE, NAME_RE, TOOL_RE, TYPE_RE, matches
+from .syntax import BUNDLE_RE, CURRENCY_RE, ID_RE, NAME_RE, SCHEME_RE, TOOL_RE, TYPE_RE, matches
 
-ARG_KINDS = ("email", "enum", "id", "int", "text")
-RESOURCE_ARG_KINDS = ("email", "id")
+ARG_KINDS = ("email", "enum", "id", "int", "money", "template", "text", "url")
+PARAM_KINDS = ("enum", "id", "int", "text")  # what a template parameter may be
+RESOURCE_ARG_KINDS = ("email", "id", "template", "url")
 ATTR_KINDS = {"bool": "Boolean", "int": "Long", "string": "String"}
+URL_SCHEMES = ("http", "https")
+DERIVATIONS = ("host_suffixes",)
+_STRING, _LONG = {"type": "String"}, {"type": "Long"}
+# The shape each canonical value takes in the request context. Records are closed, so a policy can
+# only read fields the gate actually puts there.
+_CONTEXT_TYPES: dict[str, Any] = {
+    "email": {"type": "Record", "attributes": {"address": _STRING, "domain": _STRING}},
+    "int": _LONG,
+    "money": {"type": "Record", "attributes": {"amount_minor": _LONG, "currency": _STRING}},
+    "template": {"type": "Record", "attributes": {"name": _STRING}},
+    "url": {"type": "Record", "attributes": {
+        "host": _STRING, "path": _STRING, "port": _LONG, "query": _STRING, "scheme": _STRING}},
+}
 
 
 class ManifestError(ValueError):
@@ -44,6 +59,12 @@ class ArgSpec:
     max: int | None = None
     values: tuple[str, ...] = ()
     max_len: int | None = None
+    currencies: tuple[str, ...] = ()
+    min_minor: int | None = None
+    max_minor: int | None = None
+    schemes: tuple[str, ...] = ()
+    allow_ip: bool = False
+    templates: dict[str, dict[str, "ArgSpec"]] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"type": self.kind}
@@ -53,7 +74,17 @@ class ArgSpec:
             out["values"] = list(self.values)
         elif self.kind == "text":
             out["max_len"] = self.max_len
+        elif self.kind == "money":
+            out.update(currencies=list(self.currencies), min_minor=self.min_minor, max_minor=self.max_minor)
+        elif self.kind == "url":
+            out.update(allow_ip=self.allow_ip, schemes=list(self.schemes))
+        elif self.kind == "template":
+            out["templates"] = {name: {"params": {p: s.to_json() for p, s in params.items()}}
+                                for name, params in self.templates.items()}
         return out
+
+    def context_type(self) -> Any:
+        return _CONTEXT_TYPES.get(self.kind, _STRING)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,16 +93,36 @@ class ToolSpec:
     groups: tuple[str, ...]
     resource_type: str
     resource_from: str
+    resource_field: str | None
+    parent_type: str | None
+    parent_derivation: str | None
     args: dict[str, ArgSpec]
     result_labels: tuple[str, ...]
 
     def to_json(self) -> dict[str, Any]:
+        resource: dict[str, Any] = {"from": self.resource_from, "type": self.resource_type}
+        if self.resource_field:
+            resource["field"] = self.resource_field
+        if self.parent_type:
+            resource["parents"] = {"derive": self.parent_derivation, "type": self.parent_type}
         return {
             "args": {name: spec.to_json() for name, spec in self.args.items()},
             "groups": list(self.groups),
-            "resource": {"from": self.resource_from, "type": self.resource_type},
+            "resource": resource,
             "result_labels": list(self.result_labels),
         }
+
+
+def _parse_params(spec: Any, where: str) -> dict[str, ArgSpec]:
+    _keys(spec, {"params"}, where)
+    _require(type(spec["params"]) is dict and len(spec["params"]) > 0, f"{where}.params: expected a non-empty object")
+    params: dict[str, ArgSpec] = {}
+    for name in sorted(spec["params"]):
+        _require(matches(NAME_RE, name), f"{where}: bad parameter name {name!r}")
+        parsed = _parse_arg(spec["params"][name], f"{where}.params.{name}")
+        _require(parsed.kind in PARAM_KINDS, f"{where}.params.{name}: must be one of {PARAM_KINDS}")
+        params[name] = parsed
+    return params
 
 
 def _parse_arg(spec: Any, where: str) -> ArgSpec:
@@ -79,9 +130,9 @@ def _parse_arg(spec: Any, where: str) -> ArgSpec:
     kind = spec["type"]
     if kind == "int":
         _keys(spec, {"type", "min", "max"}, where)
-        lo, hi = spec["min"], spec["max"]
-        _require(type(lo) is int and type(hi) is int and -MAX_SAFE_INT <= lo <= hi <= MAX_SAFE_INT, f"{where}: bad bounds")
-        return ArgSpec(kind, min=lo, max=hi)
+        low, high = spec["min"], spec["max"]
+        _require(type(low) is int and type(high) is int and -MAX_SAFE_INT <= low <= high <= MAX_SAFE_INT, f"{where}: bad bounds")
+        return ArgSpec(kind, min=low, max=high)
     if kind == "enum":
         _keys(spec, {"type", "values"}, where)
         values = spec["values"]
@@ -92,28 +143,73 @@ def _parse_arg(spec: Any, where: str) -> ArgSpec:
         _keys(spec, {"type", "max_len"}, where)
         _require(type(spec["max_len"]) is int and 1 <= spec["max_len"] <= 1 << 20, f"{where}: bad max_len")
         return ArgSpec(kind, max_len=spec["max_len"])
+    if kind == "money":
+        _keys(spec, {"type", "currencies", "min_minor", "max_minor"}, where)
+        currencies = _names(spec["currencies"], CURRENCY_RE, f"{where}.currencies")
+        _require(all(code in CURRENCY_EXPONENT for code in currencies), f"{where}: unknown ISO 4217 code")
+        low, high = spec["min_minor"], spec["max_minor"]
+        _require(type(low) is int and type(high) is int and 0 <= low <= high <= MAX_SAFE_INT, f"{where}: bad minor-unit bounds")
+        return ArgSpec(kind, currencies=currencies, min_minor=low, max_minor=high)
+    if kind == "url":
+        _keys(spec, {"type", "schemes", "allow_ip"}, where)
+        schemes = _names(spec["schemes"], SCHEME_RE, f"{where}.schemes")
+        _require(all(scheme in URL_SCHEMES for scheme in schemes), f"{where}: schemes must be within {URL_SCHEMES}")
+        _require(type(spec["allow_ip"]) is bool, f"{where}.allow_ip: expected a boolean")
+        return ArgSpec(kind, schemes=schemes, allow_ip=spec["allow_ip"])
+    if kind == "template":
+        _keys(spec, {"type", "templates"}, where)
+        _require(type(spec["templates"]) is dict and len(spec["templates"]) > 0, f"{where}.templates: expected a non-empty object")
+        templates: dict[str, dict[str, ArgSpec]] = {}
+        for name in sorted(spec["templates"]):
+            _require(matches(NAME_RE, name), f"{where}: bad template name {name!r}")
+            templates[name] = _parse_params(spec["templates"][name], f"{where}.templates.{name}")
+        return ArgSpec(kind, templates=templates)
     _keys(spec, {"type"}, where)
     return ArgSpec(kind)
 
 
-def _parse_tool(name: str, spec: Any, groups: tuple[str, ...], labels: tuple[str, ...], principal: str) -> ToolSpec:
+def _parse_tool(name: str, spec: Any, groups: tuple[str, ...], labels: tuple[str, ...],
+                principal: str, config_types: dict[str, tuple[str, ...]]) -> ToolSpec:
     where = f"tools.{name}"
     _require(matches(TOOL_RE, name), f"{where}: bad tool name")
     _keys(spec, {"groups", "resource", "args", "result_labels"}, where)
     tool_groups = _names(spec["groups"], TYPE_RE, f"{where}.groups")
-    _require(all(g in groups for g in tool_groups), f"{where}: unknown action group")
-    _keys(spec["resource"], {"type", "from"}, f"{where}.resource")
-    resource_type, resource_from = spec["resource"]["type"], spec["resource"]["from"]
+    _require(all(group in groups for group in tool_groups), f"{where}: unknown action group")
+
+    resource = spec["resource"]
+    _require(type(resource) is dict and resource.keys() <= {"type", "from", "field", "parents"}
+             and {"type", "from"} <= resource.keys(), f"{where}.resource: bad keys")
+    resource_type, resource_from = resource["type"], resource["from"]
     _require(matches(TYPE_RE, resource_type) and resource_type != principal, f"{where}: bad resource type")
+
     _require(type(spec["args"]) is dict and len(spec["args"]) > 0, f"{where}.args: expected a non-empty object")
     args: dict[str, ArgSpec] = {}
     for arg_name in sorted(spec["args"]):
         _require(matches(NAME_RE, arg_name), f"{where}: bad argument name {arg_name!r}")
         args[arg_name] = _parse_arg(spec["args"][arg_name], f"{where}.args.{arg_name}")
-    _require(resource_from in args and args[resource_from].kind in RESOURCE_ARG_KINDS, f"{where}: resource.from must name an id or email argument")
+    _require(resource_from in args and args[resource_from].kind in RESOURCE_ARG_KINDS,
+             f"{where}: resource.from must name an argument of kind {RESOURCE_ARG_KINDS}")
+
+    resource_field = resource.get("field")
+    record_kinds = {"email", "template", "url"}
+    if args[resource_from].kind in record_kinds:
+        _require(matches(NAME_RE, resource_field), f"{where}: resource.field is required for a record-valued argument")
+        allowed = set(args[resource_from].context_type()["attributes"])
+        _require(resource_field in allowed, f"{where}: resource.field must be one of {sorted(allowed)}")
+    else:
+        _require(resource_field is None, f"{where}: resource.field applies to record-valued arguments only")
+
+    parent_type = parent_derivation = None
+    if "parents" in resource:
+        _keys(resource["parents"], {"type", "derive"}, f"{where}.resource.parents")
+        parent_type, parent_derivation = resource["parents"]["type"], resource["parents"]["derive"]
+        _require(parent_type in config_types, f"{where}: resource.parents.type must be a config entity type")
+        _require(parent_derivation in DERIVATIONS, f"{where}: derive must be one of {DERIVATIONS}")
+
     result_labels = _names(spec["result_labels"], NAME_RE, f"{where}.result_labels")
     _require(all(label in labels for label in result_labels), f"{where}: unknown result label")
-    return ToolSpec(name, tool_groups, resource_type, resource_from, args, result_labels)
+    return ToolSpec(name, tool_groups, resource_type, resource_from, resource_field,
+                    parent_type, parent_derivation, args, result_labels)
 
 
 def _attr_ok(kind: str, value: Any) -> bool:
@@ -138,7 +234,7 @@ class Manifest:
     def parse(cls, obj: Any) -> "Manifest":
         _keys(obj, {"manifest_version", "bundle", "principal_type", "labels", "action_groups",
                     "config_entity_types", "snapshot_entity_types", "tools"}, "manifest")
-        _require(obj["manifest_version"] == 1, "manifest_version must be 1")
+        _require(obj["manifest_version"] == 2, "manifest_version must be 2")
         _require(matches(BUNDLE_RE, obj["bundle"]), "bundle: bad name")
         principal = obj["principal_type"]
         _require(matches(TYPE_RE, principal), "principal_type: bad type name")
@@ -149,11 +245,11 @@ class Manifest:
         _require(type(obj["config_entity_types"]) is dict, "config_entity_types: expected an object")
         for type_name in sorted(obj["config_entity_types"]):
             _require(matches(TYPE_RE, type_name) and type_name != principal, f"config_entity_types: bad type {type_name!r}")
-            spec = obj["config_entity_types"][type_name]
-            _keys(spec, {"member_of"}, f"config_entity_types.{type_name}")
-            config[type_name] = _names(spec["member_of"], TYPE_RE, f"{type_name}.member_of")
+            entry = obj["config_entity_types"][type_name]
+            _keys(entry, {"member_of"}, f"config_entity_types.{type_name}")
+            config[type_name] = _names(entry["member_of"], TYPE_RE, f"{type_name}.member_of")
         for type_name, parents in config.items():
-            _require(all(p in config for p in parents), f"{type_name}: member_of must name config entity types")
+            _require(all(parent in config for parent in parents), f"{type_name}: member_of must name config entity types")
 
         snapshot_types: dict[str, dict[str, str]] = {}
         _require(type(obj["snapshot_entity_types"]) is dict, "snapshot_entity_types: expected an object")
@@ -166,7 +262,13 @@ class Manifest:
             snapshot_types[type_name] = {a: attrs[a] for a in sorted(attrs)}
 
         _require(type(obj["tools"]) is dict and len(obj["tools"]) > 0, "tools: expected a non-empty object")
-        tools = {name: _parse_tool(name, obj["tools"][name], groups, labels, principal) for name in sorted(obj["tools"])}
+        tools = {name: _parse_tool(name, obj["tools"][name], groups, labels, principal, config)
+                 for name in sorted(obj["tools"])}
+        for tool in tools.values():
+            # A derived resource entity must not collide with config or snapshot data.
+            if tool.parent_type is not None:
+                _require(tool.resource_type not in config and tool.resource_type not in snapshot_types,
+                         f"tools.{tool.name}: a resource with derived parents needs its own entity type")
         return cls(obj["bundle"], principal, labels, groups, config, snapshot_types, tools)
 
     def to_json(self) -> dict[str, Any]:
@@ -176,15 +278,13 @@ class Manifest:
             "bundle": self.bundle,
             "config_entity_types": {t: {"member_of": list(p)} for t, p in self.config_entity_types.items()},
             "labels": list(self.labels),
-            "manifest_version": 1,
+            "manifest_version": 2,
             "principal_type": self.principal_type,
             "snapshot_entity_types": {t: dict(a) for t, a in self.snapshot_entity_types.items()},
             "tools": {name: tool.to_json() for name, tool in self.tools.items()},
         }
 
     def cedar_schema(self) -> dict[str, Any]:
-        """Cedar JSON schema for exactly the requests decide() builds. Records are closed, so a
-        context field the gate did not put there fails validation instead of being evaluated."""
         entity_types: dict[str, Any] = {self.principal_type: {}}
         for type_name, parents in self.config_entity_types.items():
             entity_types[type_name] = {"memberOfTypes": list(parents)} if parents else {}
@@ -192,7 +292,9 @@ class Manifest:
             entity_types[type_name] = {"shape": {"type": "Record", "attributes": {
                 name: {"type": ATTR_KINDS[kind]} for name, kind in attrs.items()}}}
         for tool in self.tools.values():
-            entity_types.setdefault(tool.resource_type, {})
+            existing = entity_types.setdefault(tool.resource_type, {})
+            if tool.parent_type:
+                existing["memberOfTypes"] = sorted(set(existing.get("memberOfTypes", [])) | {tool.parent_type})
         actions: dict[str, Any] = {group: {} for group in self.action_groups}
         for tool in self.tools.values():
             action: dict[str, Any] = {"appliesTo": {
@@ -207,23 +309,22 @@ class Manifest:
 
     @staticmethod
     def _context_type(tool: ToolSpec) -> dict[str, Any]:
-        string, long = {"type": "String"}, {"type": "Long"}
         return {"type": "Record", "attributes": {
-            "action_hash": string,
-            "now_ms": long,
+            "action_hash": _STRING,
+            "now_ms": _LONG,
             "session": {"type": "Record", "attributes": {
-                "labels": {"type": "Set", "element": string},
-                "ledger_seq": long,
-                "refunded_minor": long,
+                "labels": {"type": "Set", "element": _STRING},
+                "ledger_seq": _LONG,
+                "refunded_minor": _LONG,
             }},
-            "approval": {"type": "Record", "required": False, "attributes": {"action_hash": string}},
+            "approval": {"type": "Record", "required": False, "attributes": {"action_hash": _STRING}},
             "args": {"type": "Record", "attributes": {
-                name: (long if spec.kind == "int" else string) for name, spec in tool.args.items()}},
+                name: spec.context_type() for name, spec in tool.args.items()}},
         }}
 
     def check_snapshot(self, snap: Any) -> None:
-        """Snapshots carry runtime facts only. Policy configuration (allowlists, groups) can never
-        arrive through a snapshot, so a compromised shell path cannot widen policy."""
+        """Snapshots carry runtime facts only. Policy configuration (allowlists, group membership)
+        can never arrive through a snapshot, so a compromised shell path cannot widen policy."""
         for label in snap.labels:
             if label not in self.labels:
                 raise Rejection("unknown_label")
@@ -238,7 +339,6 @@ class Manifest:
                 raise Rejection("entity_attr_type")
 
     def check_config_entities(self, entities: Any) -> list[dict[str, Any]]:
-        """Validate and normalise the bundle's configuration entities."""
         _require(type(entities) is list, "entities: expected a list")
         out: list[dict[str, Any]] = []
         for entity in entities:
@@ -248,7 +348,7 @@ class Manifest:
             where = f"entity {type_name}::{entity_id}"
             _require(type_name in self.config_entity_types, f"{where}: only config entity types belong in a bundle")
             _require(matches(ID_RE, entity_id), f"{where}: bad id")
-            _require(entity["attrs"] == {}, f"{where}: config entities carry no attributes in phase 1")
+            _require(entity["attrs"] == {}, f"{where}: config entities carry no attributes")
             _require(type(entity["parents"]) is list, f"{where}: parents must be a list")
             parents = []
             for parent in entity["parents"]:

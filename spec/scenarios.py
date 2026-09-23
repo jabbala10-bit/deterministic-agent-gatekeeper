@@ -1,5 +1,9 @@
-"""The golden scenario grid: every combination whose verdict the oracle states, plus hand-labelled
-bypass attempts. Scenario inputs are what the shell would record; expectations are intent."""
+"""The golden scenario grid: every combination whose verdict the oracle states, the equivalence
+classes that must collapse to one canonical action, and the known-bypass corpus.
+
+Scenario inputs are what the shell would record; expectations are intent, never implementation
+output. The decimal amounts are formatted here and parsed back by the gate, so a disagreement about
+minor units shows up as a failing vector."""
 
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ from gatekeeper.core import EntityRecord, Envelope, Snapshot, canonicalize
 from gatekeeper.core.manifest import Manifest
 
 from . import oracle
+from .bypasses import CORPUS
 
 T0_MS = 1_790_000_000_000
 SESSION = "sess-7f3a"
@@ -21,12 +26,44 @@ FACTS = (
     EntityRecord.build("Account", "acc-2002", {"frozen": True}),
 )
 LABEL_SETS: tuple[tuple[str, ...], ...] = ((), ("private_data",), ("untrusted_input",), ("private_data", "untrusted_input"))
+EXPONENTS = {"EUR": 2, "USD": 2, "JPY": 0}
+MAIL_BODY = {"subject": "Your statement", "body": "Attached."}
+
 EMAIL_TARGETS = (
     ("alice@customer.example", "customer.example"),
-    ("Alice@CUSTOMER.Example.", "customer.example"),  # canonicalises to the allowlisted domain
+    ("Alice@CUSTOMER.Example.", "customer.example"),
+    ("a@billing.customer.example", "billing.customer.example"),
     ("ops@bank.example", "bank.example"),
     ("exfil@attacker.example", "attacker.example"),
+    ("a@customer.example.attacker.test", "customer.example.attacker.test"),
 )
+FETCH_TARGETS = (
+    ("https://docs.bank.example/a", "docs.bank.example"),
+    ("https://sepa-directory.example/iban/DE89", "sepa-directory.example"),
+    ("https://evil.example/x", "evil.example"),
+    ("https://bank.example.attacker.test/", "bank.example.attacker.test"),
+)
+EQUIVALENT_URLS = (
+    ("plain", "https://docs.bank.example/a/c?x=1"),
+    ("uppercase", "HTTPS://DOCS.Bank.Example/a/c?x=1"),
+    ("default-port", "https://docs.bank.example:443/a/c?x=1"),
+    ("dot-segments", "https://docs.bank.example/a/./b/../c?x=1"),
+    ("fragment", "https://docs.bank.example/a/c?x=1#section"),
+    ("trailing-dot-host", "https://docs.bank.example./a/c?x=1"),
+    ("percent-encoded-unreserved", "https://docs.bank.example/%61/c?x=1"),
+    ("encoded-dot-segments", "https://docs.bank.example/a/%2e%2e/a/c?x=1"),
+)
+EQUIVALENT_RECIPIENTS = (
+    ("plain", "alice@customer.example"),
+    ("uppercase-domain", "alice@CUSTOMER.Example"),
+    ("trailing-dot", "alice@customer.example."),
+)
+EQUIVALENT_IDNA = (  # one domain, three spellings, none of them allowlisted
+    ("unicode", "post@b\u00fccher.example"),
+    ("unicode-uppercase", "post@B\u00dcCHER.example"),
+    ("punycode", "post@xn--bcher-kva.example"),
+)
+EQUIVALENT_AMOUNTS = (("integer", "150"), ("one-decimal", "150.0"), ("two-decimals", "150.00"))
 
 
 @dataclass(frozen=True)
@@ -40,6 +77,13 @@ class Scenario:
 
 def compact(obj: object) -> str:
     return json.dumps(obj, separators=(",", ":"))
+
+
+def amount_text(minor: int, currency: str) -> str:
+    exponent = EXPONENTS[currency]
+    if exponent == 0:
+        return str(minor)
+    return f"{minor // 10**exponent}.{minor % 10**exponent:0{exponent}d}"
 
 
 def envelope(tool: str, arguments: str, *, session_id: str = SESSION) -> Envelope:
@@ -60,95 +104,99 @@ def _approvals(manifest: Manifest, env: Envelope, approval: str) -> tuple[str, .
     return ()
 
 
-def refund_scenario(manifest: Manifest, amount: int, currency: str, refunded: int, approval: str, account: str) -> Scenario:
-    env = envelope("payments.refund", compact({"account_id": ACCOUNT_IDS[account], "amount_minor": amount, "currency": currency}))
-    verdict, reasons = oracle.expect_refund(amount=amount, currency=currency, refunded=refunded,
+def refund_scenario(manifest: Manifest, minor: int, currency: str, refunded: int, approval: str, account: str) -> Scenario:
+    env = envelope("payments.refund", compact({
+        "account_id": ACCOUNT_IDS[account],
+        "amount": {"amount": amount_text(minor, currency), "currency": currency},
+    }))
+    verdict, reasons = oracle.expect_refund(amount_minor=minor, currency=currency, refunded=refunded,
                                             approved=approval == "bound", account=account)
-    return Scenario(f"refund/{account}/{currency}/{amount}/refunded-{refunded}/approval-{approval}", env,
-                    snapshot(refunded=refunded, approvals=_approvals(manifest, env, approval)), verdict, tuple(reasons))
+    name = f"refund/{account}/{currency}/{minor}/refunded-{refunded}/approval-{approval}"
+    return Scenario(name, env, snapshot(refunded=refunded, approvals=_approvals(manifest, env, approval)), verdict, tuple(reasons))
 
 
 def email_scenario(manifest: Manifest, to: str, domain: str, labels: tuple[str, ...], approval: str) -> Scenario:
-    env = envelope("email.send", compact({"to": to, "subject": "Your statement", "body": "Your statement is attached."}))
+    env = envelope("email.send", compact({"to": to, **MAIL_BODY}))
     verdict, reasons = oracle.expect_email(domain=domain, labels=labels, approved=approval == "bound")
-    return Scenario(f"email/{to}/labels-{'+'.join(labels) or 'none'}/approval-{approval}", env,
-                    snapshot(labels=labels, approvals=_approvals(manifest, env, approval)), verdict, tuple(reasons))
+    name = f"email/{to}/labels-{'+'.join(labels) or 'none'}/approval-{approval}"
+    return Scenario(name, env, snapshot(labels=labels, approvals=_approvals(manifest, env, approval)), verdict, tuple(reasons))
 
 
-_REFUND = "payments.refund"
-_EMAIL_BASE = {"to": "alice@customer.example", "subject": "Your statement", "body": "Attached."}
+def fetch_scenario(manifest: Manifest, url: str, host: str, labels: tuple[str, ...], approval: str) -> Scenario:
+    env = envelope("web.fetch", compact({"url": url}))
+    verdict, reasons = oracle.expect_fetch(host=host, scheme="https", labels=labels, approved=approval == "bound")
+    name = f"fetch/{host}/labels-{'+'.join(labels) or 'none'}/approval-{approval}"
+    return Scenario(name, env, snapshot(labels=labels, approvals=_approvals(manifest, env, approval)), verdict, tuple(reasons))
 
-# (name, tool, raw arguments, expected reason). Every one of these must be a DENY.
-BYPASS_ATTEMPTS: tuple[tuple[str, str, str, str], ...] = (
-    ("float-amount", _REFUND, '{"account_id":"acc-1001","amount_minor":150.00,"currency":"EUR"}', "INVALID_ARGUMENTS:float_not_allowed"),
-    ("exponent-amount", _REFUND, '{"account_id":"acc-1001","amount_minor":1e4,"currency":"EUR"}', "INVALID_ARGUMENTS:float_not_allowed"),
-    ("nan-amount", _REFUND, '{"account_id":"acc-1001","amount_minor":NaN,"currency":"EUR"}', "INVALID_ARGUMENTS:non_finite_number"),
-    ("duplicate-key", _REFUND, '{"account_id":"acc-1001","amount_minor":100,"amount_minor":9000000,"currency":"EUR"}', "INVALID_ARGUMENTS:duplicate_key"),
-    ("bool-amount", _REFUND, '{"account_id":"acc-1001","amount_minor":true,"currency":"EUR"}', "INVALID_ARGUMENTS:amount_minor:not_integer"),
-    ("string-amount", _REFUND, '{"account_id":"acc-1001","amount_minor":"15000","currency":"EUR"}', "INVALID_ARGUMENTS:amount_minor:not_integer"),
-    ("zero-amount", _REFUND, '{"account_id":"acc-1001","amount_minor":0,"currency":"EUR"}', "INVALID_ARGUMENTS:amount_minor:out_of_bounds"),
-    ("negative-amount", _REFUND, '{"account_id":"acc-1001","amount_minor":-500,"currency":"EUR"}', "INVALID_ARGUMENTS:amount_minor:out_of_bounds"),
-    ("over-max-amount", _REFUND, '{"account_id":"acc-1001","amount_minor":100000001,"currency":"EUR"}', "INVALID_ARGUMENTS:amount_minor:out_of_bounds"),
-    ("i64-max-amount", _REFUND, '{"account_id":"acc-1001","amount_minor":9223372036854775807,"currency":"EUR"}', "INVALID_ARGUMENTS:integer_out_of_range"),
-    ("lowercase-currency", _REFUND, '{"account_id":"acc-1001","amount_minor":100,"currency":"eur"}', "INVALID_ARGUMENTS:currency:not_in_enum"),
-    ("unknown-argument", _REFUND, '{"account_id":"acc-1001","amount_minor":100,"currency":"EUR","memo":"x"}', "INVALID_ARGUMENTS:unknown_argument"),
-    ("missing-argument", _REFUND, '{"account_id":"acc-1001","amount_minor":100}', "INVALID_ARGUMENTS:missing_argument"),
-    ("cedar-uid-injection", _REFUND, '{"account_id":"acc-1001\\" || true || \\"","amount_minor":100,"currency":"EUR"}', "INVALID_ARGUMENTS:account_id:bad_id"),
-    ("not-an-object", _REFUND, '[1,2,3]', "INVALID_ARGUMENTS:not_an_object"),
-    ("truncated-json", _REFUND, '{"account_id":', "INVALID_ARGUMENTS:malformed_json"),
-    ("trailing-comma", _REFUND, '{"account_id":"acc-1001","amount_minor":100,"currency":"EUR",}', "INVALID_ARGUMENTS:malformed_json"),
-    ("oversized-arguments", _REFUND, '{"account_id":"acc-1001","amount_minor":100,"currency":"EUR","pad":"' + "x" * 65_600 + '"}', "INVALID_ARGUMENTS:too_large"),
-    ("tool-name-case", "Payments.Refund", '{}', "UNKNOWN_TOOL"),
-    ("unregistered-tool", "payments.transfer", '{}', "UNKNOWN_TOOL"),
-    ("email-non-ascii-domain", "email.send", compact({**_EMAIL_BASE, "to": "alice@cust\u00f6mer.example"}), "INVALID_ARGUMENTS:to:non_ascii_address"),
-    ("email-two-at-signs", "email.send", compact({**_EMAIL_BASE, "to": "a@b@customer.example"}), "INVALID_ARGUMENTS:to:bad_address"),
-    ("email-ip-literal", "email.send", compact({**_EMAIL_BASE, "to": "a@127.0.0.1"}), "INVALID_ARGUMENTS:to:bad_domain"),
-    ("subject-bidi-override", "email.send", compact({**_EMAIL_BASE, "subject": "Invoice \u202efdp.exe"}), "INVALID_ARGUMENTS:subject:bidi_control"),
-    ("body-nul-byte", "email.send", compact({**_EMAIL_BASE, "body": "a\u0000b"}), "INVALID_ARGUMENTS:body:control_character"),
-    ("body-lone-surrogate", "email.send", '{"to":"alice@customer.example","subject":"s","body":"\\ud800"}', "INVALID_ARGUMENTS:lone_surrogate"),
-    ("body-unassigned-code-point", "email.send", compact({**_EMAIL_BASE, "body": "x\u0378y"}), "INVALID_ARGUMENTS:body:unassigned_code_point"),
-)
 
-FORMAT_VARIANTS = (
-    ("compact", '{"account_id":"acc-1001","amount_minor":15000,"currency":"EUR"}'),
-    ("reordered", '{"currency":"EUR","amount_minor":15000,"account_id":"acc-1001"}'),
-    ("whitespace", '{\n  "amount_minor" : 15000 ,\n  "account_id" : "acc-1001",\n  "currency" : "EUR"\n}'),
-    ("unicode-escapes", '{"account_id":"\\u0061cc-1001","amount_minor":15000,"currency":"\\u0045UR"}'),
-)
+def report_scenario(name: str, params: dict[str, object], labels: tuple[str, ...]) -> Scenario:
+    env = envelope("db.report", compact({"report": {"name": name, "params": params}}))
+    verdict, reasons = oracle.expect_report(name=name)
+    return Scenario(f"report/{name}/labels-{'+'.join(labels) or 'none'}", env, snapshot(labels=labels), verdict, tuple(reasons))
 
 
 def build(manifest: Manifest) -> list[Scenario]:
     out: list[Scenario] = []
-    for amount in (1, 15_000, 20_000, 20_001, 45_000, 450_000, 500_000, 500_001):
+    for minor in (1, 15_000, 20_000, 20_001, 45_000, 450_000, 500_000, 500_001):
         for currency in ("EUR", "USD"):
             for refunded in (0, 30_000, 45_000, 460_000):
                 for approval in ("none", "bound", "other"):
-                    out.append(refund_scenario(manifest, amount, currency, refunded, approval, "ok"))
+                    out.append(refund_scenario(manifest, minor, currency, refunded, approval, "ok"))
+    for minor in (150, 20_000):
+        for approval in ("none", "bound"):
+            out.append(refund_scenario(manifest, minor, "JPY", 0, approval, "ok"))
     for account in ("frozen", "missing"):
-        for amount in (15_000, 450_000):
+        for minor in (15_000, 450_000):
             for approval in ("none", "bound"):
-                out.append(refund_scenario(manifest, amount, "EUR", 0, approval, account))
+                out.append(refund_scenario(manifest, minor, "EUR", 0, approval, account))
+
     for to, domain in EMAIL_TARGETS:
         for labels in LABEL_SETS:
             for approval in ("none", "bound"):
                 out.append(email_scenario(manifest, to, domain, labels, approval))
+    for url, host in FETCH_TARGETS:
+        for labels in LABEL_SETS:
+            for approval in ("none", "bound"):
+                out.append(fetch_scenario(manifest, url, host, labels, approval))
+
+    for template, params in (("refund_summary", {"account_id": "acc-1001", "since_days": 30}),
+                             ("customer_balance", {"customer_id": "cust-42"}),
+                             ("pii_export", {"customer_id": "cust-42"})):
+        for labels in ((), ("private_data",)):
+            out.append(report_scenario(template, params, labels))
+
     for tool, arg, resource in (("crm.lookup", "customer_id", "cust-42"), ("inbox.read", "mailbox_id", "mbx-support")):
         for labels in LABEL_SETS:
             verdict, reasons = oracle.expect_read()
-            out.append(Scenario(f"read/{tool}/labels-{'+'.join(labels) or 'none'}", envelope(tool, compact({arg: resource})),
-                                snapshot(labels=labels), verdict, tuple(reasons)))
-    for name, raw in FORMAT_VARIANTS:
-        out.append(Scenario(f"format/{name}", envelope(_REFUND, raw), snapshot(), "ALLOW", ("refund-auto",)))
-    for name, tool, raw, reason in BYPASS_ATTEMPTS:
-        out.append(Scenario(f"invalid/{name}", envelope(tool, raw), snapshot(), "DENY", (reason,)))
+            out.append(Scenario(f"read/{tool}/labels-{'+'.join(labels) or 'none'}",
+                                envelope(tool, compact({arg: resource})), snapshot(labels=labels), verdict, tuple(reasons)))
 
-    valid_refund = envelope(_REFUND, compact({"account_id": "acc-1001", "amount_minor": 100, "currency": "EUR"}))
-    out.append(Scenario("invalid-snapshot/unknown-label", valid_refund, snapshot(labels=("root_access",)),
-                        "DENY", ("INVALID_SNAPSHOT:unknown_label",)))
-    smuggled = (EntityRecord.build("Recipient", "attacker.example", {}),)
-    out.append(Scenario("invalid-snapshot/config-entity-smuggled-in", email_scenario(
-        manifest, "exfil@attacker.example", "attacker.example", (), "none").envelope, snapshot(extra=smuggled),
-        "DENY", ("INVALID_SNAPSHOT:entity_type_not_allowed",)))
-    out.append(Scenario("invalid-snapshot/session-mismatch", envelope(_REFUND, valid_refund.arguments, session_id="sess-other"),
+    # Equivalence classes: every spelling in a group must collapse to one canonical action.
+    for variant, url in EQUIVALENT_URLS:
+        out.append(Scenario(f"equivalence/url/{variant}", envelope("web.fetch", compact({"url": url})),
+                            snapshot(), "ALLOW", ("egress-allowlisted-host",)))
+    for variant, to in EQUIVALENT_RECIPIENTS:
+        out.append(Scenario(f"equivalence/recipient/{variant}", envelope("email.send", compact({"to": to, **MAIL_BODY})),
+                            snapshot(), "ALLOW", ("egress-allowlisted-recipient",)))
+    for variant, to in EQUIVALENT_IDNA:
+        out.append(Scenario(f"equivalence/idna/{variant}", envelope("email.send", compact({"to": to, **MAIL_BODY})),
+                            snapshot(), "REQUIRE_APPROVAL", ("egress-approved",)))
+    for variant, amount in EQUIVALENT_AMOUNTS:
+        out.append(Scenario(f"equivalence/amount/{variant}", envelope("payments.refund", compact(
+            {"account_id": "acc-1001", "amount": {"amount": amount, "currency": "EUR"}})),
+            snapshot(), "ALLOW", ("refund-auto",)))
+
+    for name, tool, raw, verdict, reason in CORPUS:
+        out.append(Scenario(f"bypass/{name}", envelope(tool, raw), snapshot(), verdict, (reason,)))
+
+    valid_refund = compact({"account_id": "acc-1001", "amount": {"amount": "1.00", "currency": "EUR"}})
+    out.append(Scenario("invalid-snapshot/unknown-label", envelope("payments.refund", valid_refund),
+                        snapshot(labels=("root_access",)), "DENY", ("INVALID_SNAPSHOT:unknown_label",)))
+    out.append(Scenario("invalid-snapshot/config-entity-smuggled-in",
+                        envelope("email.send", compact({"to": "exfil@attacker.example", **MAIL_BODY})),
+                        snapshot(extra=(EntityRecord.build("DomainSuffix", "attacker.example", {}),)),
+                        "DENY", ("INVALID_SNAPSHOT:entity_type_not_allowed",)))
+    out.append(Scenario("invalid-snapshot/session-mismatch",
+                        envelope("payments.refund", valid_refund, session_id="sess-other"),
                         snapshot(), "DENY", ("INVALID_SNAPSHOT:session_mismatch",)))
     return out

@@ -40,10 +40,11 @@ wheels = [
 
 [[package]]
 name = "deterministic-agent-gatekeeper"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "cedarpy" },
+    { name = "idna" },
 ]
 
 [package.dev-dependencies]
@@ -53,7 +54,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "cedarpy", specifier = "==4.12.0" }]
+requires-dist = [
+    { name = "cedarpy", specifier = "==4.12.0" },
+    { name = "idna", specifier = "==3.20" },
+]
 
 [package.metadata.requires-dev]
 dev = [
@@ -131,6 +135,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/86/8f/b9799ae6ba6074f151db2c63f9f6f12d844512821ffaba1a3672d7e59f07/hypothesis-6.168.0-cp315-abi3.abi3t-win32.whl", hash = "sha256:91e3de666a6c4f7543000d1710e25055d63ef3032c98bd2ab338b3087bdaa780", size = 675173, upload-time = "2026-09-08T18:47:52.601Z" },
     { url = "https://files.pythonhosted.org/packages/61/54/14c3e277b451ff24128ecc2673cac59dd7e535bce1a433c466912fd682e1/hypothesis-6.168.0-cp315-abi3.abi3t-win_amd64.whl", hash = "sha256:9a2079cd09919956dd388f1a1f8ea5a79f2b2437650fbeda31d8661217ffefef", size = 681491, upload-time = "2026-09-08T18:46:51.437Z" },
     { url = "https://files.pythonhosted.org/packages/99/f3/827e4a48ffee7e40244b0bf064ba47c2171e053ab7edf1cf770105e23401/hypothesis-6.168.0-cp315-abi3.abi3t-win_arm64.whl", hash = "sha256:085c9aa246487c56a40ca89003d285cbffdbb5be4097ba6d0139f9c21003c04a", size = 679197, upload-time = "2026-09-08T18:47:32.112Z" },
+]
+
+[[package]]
+name = "idna"
+version = "3.20"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/08/8eea9d4b8302028f3abb2c0813953f7aec26d33b7a8960ed760e65ff29fa/idna-3.20.tar.gz", hash = "sha256:a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44", size = 216463, upload-time = "2026-09-17T14:11:04.752Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl", hash = "sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c", size = 69583, upload-time = "2026-09-17T14:11:03.168Z" },
 ]
 
 [[package]]

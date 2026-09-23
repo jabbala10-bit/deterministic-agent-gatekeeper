@@ -42,7 +42,7 @@ def test_I1_core_performs_no_io_reads_no_clock_and_draws_no_randomness():
 def test_I4_gate_denies_where_the_raw_engine_fails_open(bundle):
     s = sc.refund_scenario(bundle.manifest, 15_000, "EUR", 0, "none", "missing")
     action = canonicalize(s.envelope, bundle.manifest)
-    raw = bundle.evaluate(action, build_context(s.envelope, s.snapshot, action, action.digest()), s.snapshot.entities)
+    raw = bundle.evaluate(action, build_context(s.envelope, s.snapshot, action, action.digest(), bundle), s.snapshot.entities)
     # The engine skips the erroring forbid and says Allow; the error is only a diagnostic.
     assert raw.engine_decision == "Allow"
     assert raw.errors == ("no-refund-to-frozen-account",)
@@ -52,7 +52,7 @@ def test_I4_gate_denies_where_the_raw_engine_fails_open(bundle):
 
 def test_I4_snapshot_cannot_smuggle_policy_configuration(bundle):
     # An allowlist entry arriving through runtime state would silently widen policy (ADR-005).
-    smuggled = sc.snapshot(extra=(EntityRecord.build("Recipient", "attacker.example", {}),))
+    smuggled = sc.snapshot(extra=(EntityRecord.build("DomainSuffix", "attacker.example", {}),))
     env = sc.envelope("email.send", sc.compact({"to": "exfil@attacker.example", "subject": "s", "body": "b"}))
     decision = decide(env, smuggled, bundle)
     assert (decision.verdict, decision.reasons) == ("DENY", ("INVALID_SNAPSHOT:entity_type_not_allowed",))
@@ -104,7 +104,7 @@ def test_reasons_are_sorted_stable_ids_not_engine_order(bundle):
 
 def test_the_validator_rejects_a_typo_at_load(policies_text):
     with pytest.raises(BundleError, match="validation failed"):
-        bundle_with_policies(policies_text.replace("context.args.amount_minor <= 20000", "context.args.amount <= 20000"))
+        bundle_with_policies(policies_text.replace("context.args.amount.amount_minor <= 20000", "context.args.amount.minor <= 20000"))
 
 
 def test_every_policy_needs_a_stable_id(policies_text):
@@ -114,4 +114,4 @@ def test_every_policy_needs_a_stable_id(policies_text):
 
 def test_duplicate_ids_are_rejected(policies_text):
     with pytest.raises(BundleError, match="duplicate @id"):
-        bundle_with_policies(policies_text.replace('@id("egress-approved")', '@id("egress-allowlisted")'))
+        bundle_with_policies(policies_text.replace('@id("egress-approved")', '@id("egress-allowlisted-host")'))

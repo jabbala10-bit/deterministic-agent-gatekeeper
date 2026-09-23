@@ -1,9 +1,12 @@
-"""Canonicalisation: turn the agent's raw proposal into the one structure that is both checked
-and executed. Most real gate bypasses are representation tricks, so every argument is parsed
-once, strictly, into a typed canonical value; anything that cannot be canonicalised is refused.
+"""Canonicalisation: turn the agent's raw proposal into the one structure that is both checked and
+executed.
 
-Phase 1 covers ids, bounded integers, enums, text and ASCII email addresses. URLs, IDNA and
-templated commands arrive in phase 2; until then they are refused rather than guessed at."""
+Most real gate bypasses are representation tricks, so every argument is parsed once, strictly, into
+a typed canonical value. Anything that cannot be canonicalised is refused rather than guessed at.
+
+Free-form command languages (SQL, shell) are deliberately absent. They are not canonicalised at all;
+a tool exposes named templates with typed parameters instead, and the gate passes the template name
+and parameters rather than a string an executor would have to re-parse."""
 
 from __future__ import annotations
 
@@ -13,14 +16,17 @@ from typing import Any
 
 from .digest import digest
 from .errors import Rejection
-from .manifest import ArgSpec, Manifest
+from .manifest import ArgSpec, Manifest, ToolSpec
 from .model import Envelope
+from .money import canonical_money
 from .strictjson import StrictJSONError, loads_strict
-from .syntax import DOMAIN_LABEL_RE, ID_RE, LOCAL_PART_RE
+from .syntax import DOMAIN_LABEL_RE, ID_RE, LOCAL_PART_RE, NAME_RE, matches
+from .url import canonical_host, canonical_url, host_suffixes
 
 MAX_ARGUMENTS_BYTES = 64 * 1024
 # Explicit bidi embeddings, overrides and isolates ("Trojan Source"). Marks such as U+200E stay legal.
 _BIDI_CONTROLS = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+_DERIVATIONS = {"host_suffixes": host_suffixes}
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +36,7 @@ class CanonicalAction:
     principal: str
     resource_type: str
     resource_id: str
+    resource_parents: tuple[tuple[str, str], ...]
     session_id: str
     args: dict[str, Any]
 
@@ -43,13 +50,18 @@ class CanonicalAction:
         }
 
     def digest(self) -> str:
-        """The hash an approval binds to and the executor re-checks (invariant 3)."""
+        """The hash an approval binds to and the executor re-checks (invariant 3).
+
+        Derived parents are not hashed: they are a deterministic function of the resource id."""
         return digest("dag/action/v1", self.to_json())
+
+    def context_args(self) -> dict[str, Any]:
+        return dict(self.args)
 
 
 def canonicalize(env: Envelope, manifest: Manifest) -> CanonicalAction:
-    spec = manifest.tools.get(env.tool)
-    if spec is None:
+    tool = manifest.tools.get(env.tool)
+    if tool is None:
         raise Rejection("UNKNOWN_TOOL")
     try:
         raw = loads_strict(env.arguments, max_bytes=MAX_ARGUMENTS_BYTES)
@@ -57,56 +69,104 @@ def canonicalize(env: Envelope, manifest: Manifest) -> CanonicalAction:
         raise Rejection(f"INVALID_ARGUMENTS:{err.code}") from None
     if type(raw) is not dict:
         raise Rejection("INVALID_ARGUMENTS:not_an_object")
-    if any(name not in spec.args for name in raw):
+    if any(name not in tool.args for name in raw):
         raise Rejection("INVALID_ARGUMENTS:unknown_argument")
-    if any(name not in raw for name in spec.args):
+    if any(name not in raw for name in tool.args):
         raise Rejection("INVALID_ARGUMENTS:missing_argument")
 
     args: dict[str, Any] = {}
-    resource_id = ""
-    for name in sorted(spec.args):
+    for name in sorted(tool.args):
         try:
-            value, resource_candidate = _canonical_value(spec.args[name], raw[name])
+            args[name] = _canonical_value(tool.args[name], raw[name])
         except Rejection as err:
             # Argument names come from the manifest, never from the agent, so they are safe to cite.
             raise Rejection(f"INVALID_ARGUMENTS:{name}:{err.code}") from None
-        args[name] = value
-        if name == spec.resource_from:
-            resource_id = resource_candidate or ""
+
+    resource_id = args[tool.resource_from]
+    if tool.resource_field:
+        resource_id = resource_id[tool.resource_field]
+    if not matches(ID_RE, resource_id):
+        raise Rejection("INVALID_ARGUMENTS:bad_resource_id")
+    parents: tuple[tuple[str, str], ...] = ()
+    if tool.parent_type:
+        derive = _DERIVATIONS[tool.parent_derivation]
+        parents = tuple((tool.parent_type, suffix) for suffix in derive(resource_id))
 
     return CanonicalAction(
-        tool=spec.name,
+        tool=tool.name,
         principal_type=manifest.principal_type,
         principal=env.principal,
-        resource_type=spec.resource_type,
+        resource_type=tool.resource_type,
         resource_id=resource_id,
+        resource_parents=parents,
         session_id=env.session_id,
         args=args,
     )
 
 
-def _canonical_value(spec: ArgSpec, value: Any) -> tuple[Any, str | None]:
+def context_value(spec: ArgSpec, value: Any) -> Any:
+    """What a policy may read. Template parameters are validated but not exposed: their shape varies
+    per template, and a closed Cedar record cannot describe them. They stay in the action hash."""
+    if spec.kind == "template":
+        return {"name": value["name"]}
+    return value
+
+
+def context_args(tool: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
+    return {name: context_value(tool.args[name], value) for name, value in args.items()}
+
+
+def _canonical_value(spec: ArgSpec, value: Any) -> Any:
     if spec.kind == "id":
         if type(value) is not str or ID_RE.match(value) is None:
             raise Rejection("bad_id")
-        return value, value
+        return value
     if spec.kind == "int":
         if type(value) is not int:  # bool is an int subclass in Python; type() excludes it
             raise Rejection("not_integer")
-        assert spec.min is not None and spec.max is not None
         if not spec.min <= value <= spec.max:
             raise Rejection("out_of_bounds")
-        return value, None
+        return value
     if spec.kind == "enum":
         if type(value) is not str or value not in spec.values:
             raise Rejection("not_in_enum")
-        return value, None
+        return value
     if spec.kind == "text":
-        assert spec.max_len is not None
-        return canonical_text(value, spec.max_len), None
+        return canonical_text(value, spec.max_len)
     if spec.kind == "email":
         return canonical_email(value)
+    if spec.kind == "money":
+        return canonical_money(value, currencies=spec.currencies, min_minor=spec.min_minor, max_minor=spec.max_minor)
+    if spec.kind == "url":
+        return canonical_url(value, schemes=spec.schemes, allow_ip=spec.allow_ip)
+    if spec.kind == "template":
+        return _canonical_template(spec, value)
     raise Rejection("unsupported_kind")
+
+
+def _canonical_template(spec: ArgSpec, value: Any) -> dict[str, Any]:
+    if type(value) is not dict or sorted(value) != ["name", "params"]:
+        raise Rejection("expected_name_and_params")
+    name = value["name"]
+    if type(name) is not str or not matches(NAME_RE, name):
+        raise Rejection("bad_template_name")
+    params_spec = spec.templates.get(name)
+    if params_spec is None:
+        raise Rejection("unknown_template")
+    params = value["params"]
+    if type(params) is not dict:
+        raise Rejection("expected_params_object")
+    if any(key not in params_spec for key in params):
+        raise Rejection("unknown_parameter")
+    if any(key not in params for key in params_spec):
+        raise Rejection("missing_parameter")
+    canonical = {}
+    for key in sorted(params_spec):
+        try:
+            canonical[key] = _canonical_value(params_spec[key], params[key])
+        except Rejection as err:
+            raise Rejection(f"{key}:{err.code}") from None
+    return {"name": name, "params": canonical}
 
 
 def canonical_text(value: Any, max_len: int) -> str:
@@ -129,24 +189,19 @@ def canonical_text(value: Any, max_len: int) -> str:
     return text
 
 
-def canonical_email(value: Any) -> tuple[str, str]:
-    """Returns (address, domain). Domain is lower-cased with any trailing dot removed; the local
-    part is kept byte-for-byte because RFC 5321 leaves its case significance to the receiver."""
+def canonical_email(value: Any) -> dict[str, str]:
+    """Returns {"address", "domain"}. The domain goes through the same IDNA path as a URL host; the
+    local part keeps its case, because RFC 5321 leaves that to the receiving server."""
     if type(value) is not str:
         raise Rejection("not_text")
-    if not value.isascii():
-        raise Rejection("non_ascii_address")  # IDNA and internationalised addresses: phase 2
+    if "<" in value or ">" in value or "," in value:
+        raise Rejection("bad_address")  # display names and lists are two addresses waiting to happen
     if value.count("@") != 1:
         raise Rejection("bad_address")
     local, domain = value.split("@")
-    if LOCAL_PART_RE.match(local) is None or local.startswith(".") or local.endswith(".") or ".." in local:
-        raise Rejection("bad_local_part")
-    domain = domain.lower()
-    if domain.endswith("."):
-        domain = domain[:-1]
-    labels = domain.split(".")
-    if len(domain) > 253 or len(labels) < 2 or labels[-1].isdigit():
+    if not local.isascii() or LOCAL_PART_RE.match(local) is None or local.startswith(".") or local.endswith(".") or ".." in local:
+        raise Rejection("bad_local_part")  # internationalised local parts (SMTPUTF8) are not supported
+    domain = canonical_host(domain)
+    if not all(DOMAIN_LABEL_RE.match(label) for label in domain.split(".")):
         raise Rejection("bad_domain")
-    if not all(DOMAIN_LABEL_RE.match(label) for label in labels):
-        raise Rejection("bad_domain")
-    return f"{local}@{domain}", domain
+    return {"address": f"{local}@{domain}", "domain": domain}

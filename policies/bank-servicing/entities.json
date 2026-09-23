@@ -1,5 +1,8 @@
 [
   {"uid": {"type": "RecipientGroup", "id": "allowlisted"}, "attrs": {}, "parents": []},
-  {"uid": {"type": "Recipient", "id": "bank.example"}, "attrs": {}, "parents": [{"type": "RecipientGroup", "id": "allowlisted"}]},
-  {"uid": {"type": "Recipient", "id": "customer.example"}, "attrs": {}, "parents": [{"type": "RecipientGroup", "id": "allowlisted"}]}
+  {"uid": {"type": "DomainSuffix", "id": "bank.example"}, "attrs": {}, "parents": [{"type": "RecipientGroup", "id": "allowlisted"}]},
+  {"uid": {"type": "DomainSuffix", "id": "customer.example"}, "attrs": {}, "parents": [{"type": "RecipientGroup", "id": "allowlisted"}]},
+  {"uid": {"type": "HostGroup", "id": "egress-allowlist"}, "attrs": {}, "parents": []},
+  {"uid": {"type": "HostSuffix", "id": "bank.example"}, "attrs": {}, "parents": [{"type": "HostGroup", "id": "egress-allowlist"}]},
+  {"uid": {"type": "HostSuffix", "id": "sepa-directory.example"}, "attrs": {}, "parents": [{"type": "HostGroup", "id": "egress-allowlist"}]}
 ]

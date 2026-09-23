@@ -10,13 +10,15 @@ from spec import scenarios as sc
 
 AMOUNT = st.integers(1, 100_000_000)
 CURRENCY = st.sampled_from(["EUR", "USD"])
+HOSTS = st.sampled_from(["docs.bank.example", "bank.example", "sepa-directory.example",
+                         "evil.example", "bank.example.attacker.test", "a.b.customer.example"])
 
 
 @settings(max_examples=300, deadline=None)
-@given(amount=AMOUNT, currency=CURRENCY, order=st.permutations(["account_id", "amount_minor", "currency"]),
+@given(amount=AMOUNT, currency=CURRENCY, order=st.permutations(["account_id", "amount"]),
        seps=st.sampled_from([(",", ":"), (", ", ": "), (",\n  ", " : ")]))
 def test_formatting_never_changes_the_action_or_the_verdict(bundle, amount, currency, order, seps):
-    args = {"account_id": "acc-1001", "amount_minor": amount, "currency": currency}
+    args = {"account_id": "acc-1001", "amount": {"amount": sc.amount_text(amount, currency), "currency": currency}}
     shuffled = "{" + seps[0].join(f"{json.dumps(k)}{seps[1]}{json.dumps(args[k])}" for k in order) + "}"
     a = decide(sc.envelope("payments.refund", sc.compact(args)), sc.snapshot(), bundle)
     b = decide(sc.envelope("payments.refund", shuffled), sc.snapshot(), bundle)
@@ -34,11 +36,22 @@ def test_refund_decisions_match_the_oracle(bundle, amount, currency, refunded, a
 
 @settings(max_examples=400, deadline=None)
 @given(local=st.from_regex(r"[a-z0-9]{1,12}", fullmatch=True),
-       domain=st.sampled_from(["customer.example", "bank.example", "attacker.example", "evil.test"]),
+       domain=st.sampled_from(["customer.example", "mail.customer.example", "bank.example",
+                               "attacker.example", "customer.example.attacker.test"]),
        labels=st.sets(st.sampled_from(["private_data", "untrusted_input"])), approved=st.booleans())
 def test_email_decisions_match_the_oracle(bundle, local, domain, labels, approved):
     ordered = tuple(sorted(labels))
     s = sc.email_scenario(bundle.manifest, f"{local}@{domain}", domain, ordered, "bound" if approved else "none")
+    d = decide(s.envelope, s.snapshot, bundle)
+    assert (d.verdict, d.reasons) == (s.verdict, s.reasons)
+
+
+@settings(max_examples=400, deadline=None)
+@given(host=HOSTS, path=st.from_regex(r"/[a-z0-9/]{0,20}", fullmatch=True),
+       labels=st.sets(st.sampled_from(["private_data", "untrusted_input"])), approved=st.booleans())
+def test_fetch_decisions_match_the_oracle(bundle, host, path, labels, approved):
+    s = sc.fetch_scenario(bundle.manifest, f"https://{host}{path}", host, tuple(sorted(labels)),
+                          "bound" if approved else "none")
     d = decide(s.envelope, s.snapshot, bundle)
     assert (d.verdict, d.reasons) == (s.verdict, s.reasons)
 
@@ -49,7 +62,7 @@ JSONISH = st.recursive(
     lambda c: st.lists(c, max_size=3) | st.dictionaries(TEXT, c, max_size=3),
     max_leaves=8,
 )
-TOOLS = st.sampled_from(["payments.refund", "email.send", "crm.lookup", "inbox.read"])
+TOOLS = st.sampled_from(["payments.refund", "email.send", "web.fetch", "db.report", "crm.lookup", "inbox.read"])
 
 
 @settings(max_examples=1000, deadline=None)

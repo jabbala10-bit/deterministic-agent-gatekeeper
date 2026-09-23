@@ -29,7 +29,7 @@ def reseal(records):
 def test_replay_rederives_every_recorded_decision_exactly(bundle, demo_records):
     _, records = demo_records
     report = replay(records, bundle)
-    assert report.ok and report.exact == report.records == 10
+    assert report.ok and report.exact == report.records == 18
 
 
 def test_editing_a_recorded_verdict_is_caught_twice(bundle, demo_records):
@@ -41,11 +41,11 @@ def test_editing_a_recorded_verdict_is_caught_twice(bundle, demo_records):
 
 
 def test_a_consistently_resealed_forgery_still_fails_replay(bundle, demo_records):
-    # Rewrite the first refund to EUR 900,000 and recompute the whole chain: hashing alone cannot
+    # Rewrite the first refund to EUR 900,000.00 and recompute the whole chain: hashing alone cannot
     # tell. Replay can, because the recorded decision no longer follows from the recorded inputs.
     # (A forger who also recomputes decisions is stopped by signatures, which arrive in phase 4.)
     _, records = demo_records
-    records[0]["envelope"]["arguments"] = records[0]["envelope"]["arguments"].replace("15000", "90000000")
+    records[0]["envelope"]["arguments"] = records[0]["envelope"]["arguments"].replace('"150.00"', '"900000.00"')
     forged = reseal(records)
     assert verify_chain(forged) == []
     report = replay(forged, bundle)

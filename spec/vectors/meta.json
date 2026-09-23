@@ -1,16 +1,17 @@
 {
-  "corpus_digest": "sha256:422c0165a5fe92cad49e5ce27f335695d998abfd18beb7ca4900dac840cfe484",
-  "count": 274,
+  "corpus_digest": "sha256:fd58730d5be8d3ede0ecb1c095fa369ac98a88cfd3417039bd466e1f3b9c4c6b",
+  "count": 400,
   "gate": {
-    "canon": 1,
+    "canon": 2,
     "engine": "cedarpy 4.12.0",
-    "gate": "0.1.0",
+    "gate": "0.2.0",
+    "idna": "3.20",
     "unicode": "15.0.0"
   },
-  "policy_hash": "sha256:defcf9fa9e1a8715408733a3c9bcc70179a6c1346e6da6f11206ff61ae6e99b6",
+  "policy_hash": "sha256:565f60421e3c633ff1480364ff4cdf303bf9fff3d613bcce631631e7fd8929e4",
   "verdicts": {
-    "ALLOW": 93,
-    "DENY": 100,
-    "REQUIRE_APPROVAL": 81
+    "ALLOW": 136,
+    "DENY": 161,
+    "REQUIRE_APPROVAL": 103
   }
 }

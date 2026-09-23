@@ -109,10 +109,19 @@ class PolicyBundle:
             "resource": {"type": action.resource_type, "id": action.resource_id},
             "context": context,
         }
+        extra = [fact.to_cedar() for fact in facts]
+        if action.resource_parents:
+            # The resource entity is derived from the canonical action, never from the snapshot, so a
+            # bundle can allowlist a domain suffix and reach every host beneath it.
+            extra.append({
+                "uid": {"type": action.resource_type, "id": action.resource_id},
+                "attrs": {},
+                "parents": [{"type": kind, "id": identifier} for kind, identifier in action.resource_parents],
+            })
         try:
             entities = self._base_entities
-            if facts:
-                entities = entities.with_added_json_str(json.dumps([f.to_cedar() for f in facts]), self._schema)
+            if extra:
+                entities = entities.with_added_json_str(json.dumps(extra), self._schema)
             result = is_authorized(request, self._policy_set, entities, self._schema)
         except Exception:  # the engine refused its input: fail closed with a stable code
             return Evaluation(False, (), ("engine_exception",), "Exception")

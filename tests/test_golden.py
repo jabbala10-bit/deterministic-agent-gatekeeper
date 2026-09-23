@@ -40,14 +40,27 @@ def test_corpus_fingerprint_matches(bundle):
     assert corpus_digest(bundle) == load_meta()["corpus_digest"]
 
 
-def test_formatting_variants_are_one_canonical_action():
-    group = [v for v in VECTORS if v["name"].startswith("format/")]
-    assert len(group) == 4
-    assert len({v["expect"]["action_hash"] for v in group}) == 1      # what executes is identical
-    assert len({v["expect"]["decision_hash"] for v in group}) == 4    # what was received is recorded exactly
+def test_equivalence_classes_collapse_to_one_canonical_action():
+    """Every spelling in a class must execute as the same action, and classes must stay distinct."""
+    classes: dict[str, list[dict]] = collections.defaultdict(list)
+    for vector in VECTORS:
+        if vector["name"].startswith("equivalence/"):
+            classes[vector["name"].split("/")[1]].append(vector)
+    assert set(classes) == {"amount", "idna", "recipient", "url"}
+    canonical = {}
+    for family, group in classes.items():
+        assert len(group) >= 3, family
+        hashes = {v["expect"]["action_hash"] for v in group}
+        assert len(hashes) == 1, (family, [v["name"] for v in group])
+        # the raw bytes still differ, so each decision records exactly what arrived
+        assert len({v["expect"]["decision_hash"] for v in group}) == len(group), family
+        canonical[family] = hashes.pop()
+    assert len(set(canonical.values())) == len(canonical)
 
 
-def test_every_bypass_attempt_is_denied():
-    attempts = [v for v in VECTORS if v["name"].startswith(("invalid/", "invalid-snapshot/"))]
-    assert len(attempts) >= 30
-    assert all(v["expect"]["verdict"] == "DENY" for v in attempts)
+def test_no_known_bypass_reaches_allow():
+    attempts = [v for v in VECTORS if v["name"].startswith(("bypass/", "invalid-snapshot/"))]
+    assert len(attempts) >= 80
+    assert not [v["name"] for v in attempts if v["expect"]["verdict"] == "ALLOW"]
+    refused_outright = [v for v in attempts if v["expect"]["verdict"] == "DENY"]
+    assert len(refused_outright) >= 70

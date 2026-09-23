@@ -16,14 +16,16 @@ from __future__ import annotations
 import unicodedata
 from typing import Any
 
+import idna
+
 from .bundle import PolicyBundle
-from .canonical import CanonicalAction, canonicalize
+from .canonical import CanonicalAction, canonicalize, context_args
 from .digest import digest
 from .errors import Rejection
 from .model import Decision, Envelope, Snapshot
 
-GATE_VERSION = "0.1.0"
-CANON_VERSION = 1
+GATE_VERSION = "0.2.0"
+CANON_VERSION = 2
 
 
 def gate_identity(bundle: PolicyBundle) -> dict[str, Any]:
@@ -31,14 +33,17 @@ def gate_identity(bundle: PolicyBundle) -> dict[str, Any]:
         "canon": CANON_VERSION,
         "engine": bundle.engine,
         "gate": GATE_VERSION,
+        # Host canonicalisation depends on the IDNA tables, exactly as text depends on Unicode's.
+        "idna": idna.__version__,
         "unicode": unicodedata.unidata_version,
     }
 
 
-def build_context(env: Envelope, snap: Snapshot, action: CanonicalAction, action_hash: str) -> dict[str, Any]:
+def build_context(env: Envelope, snap: Snapshot, action: CanonicalAction, action_hash: str,
+                  bundle: PolicyBundle) -> dict[str, Any]:
     context: dict[str, Any] = {
         "action_hash": action_hash,
-        "args": dict(action.args),
+        "args": context_args(bundle.manifest.tools[action.tool], action.args),
         "now_ms": env.t_ms,
         "session": {
             "labels": list(snap.labels),
@@ -84,7 +89,7 @@ def decide(env: Envelope, snap: Snapshot, bundle: PolicyBundle) -> Decision:
         return finish("DENY", [err.code])
 
     action_hash = action.digest()
-    context = build_context(env, snap, action, action_hash)
+    context = build_context(env, snap, action, action_hash, bundle)
     already_approved = "approval" in context
 
     first = bundle.evaluate(action, context, snap.entities)

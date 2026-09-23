@@ -1,12 +1,14 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "bundle": "bank-servicing",
   "principal_type": "Agent",
   "labels": ["private_data", "untrusted_input"],
   "action_groups": ["Egress", "Read"],
   "config_entity_types": {
     "RecipientGroup": {"member_of": []},
-    "Recipient": {"member_of": ["RecipientGroup"]}
+    "DomainSuffix": {"member_of": ["RecipientGroup"]},
+    "HostGroup": {"member_of": []},
+    "HostSuffix": {"member_of": ["HostGroup"]}
   },
   "snapshot_entity_types": {
     "Account": {"frozen": "bool"}
@@ -17,20 +19,44 @@
       "resource": {"type": "Account", "from": "account_id"},
       "args": {
         "account_id": {"type": "id"},
-        "amount_minor": {"type": "int", "min": 1, "max": 100000000},
-        "currency": {"type": "enum", "values": ["EUR", "USD"]}
+        "amount": {"type": "money", "currencies": ["EUR", "JPY", "USD"], "min_minor": 1, "max_minor": 100000000}
       },
       "result_labels": []
     },
     "email.send": {
       "groups": ["Egress"],
-      "resource": {"type": "Recipient", "from": "to"},
+      "resource": {"type": "Recipient", "from": "to", "field": "domain",
+                   "parents": {"type": "DomainSuffix", "derive": "host_suffixes"}},
       "args": {
         "to": {"type": "email"},
         "subject": {"type": "text", "max_len": 200},
         "body": {"type": "text", "max_len": 20000}
       },
       "result_labels": []
+    },
+    "web.fetch": {
+      "groups": ["Egress"],
+      "resource": {"type": "Host", "from": "url", "field": "host",
+                   "parents": {"type": "HostSuffix", "derive": "host_suffixes"}},
+      "args": {
+        "url": {"type": "url", "schemes": ["https"], "allow_ip": false}
+      },
+      "result_labels": ["untrusted_input"]
+    },
+    "db.report": {
+      "groups": [],
+      "resource": {"type": "Report", "from": "report", "field": "name"},
+      "args": {
+        "report": {
+          "type": "template",
+          "templates": {
+            "refund_summary": {"params": {"account_id": {"type": "id"}, "since_days": {"type": "int", "min": 1, "max": 90}}},
+            "customer_balance": {"params": {"customer_id": {"type": "id"}}},
+            "pii_export": {"params": {"customer_id": {"type": "id"}}}
+          }
+        }
+      },
+      "result_labels": ["private_data"]
     },
     "crm.lookup": {
       "groups": ["Read"],
