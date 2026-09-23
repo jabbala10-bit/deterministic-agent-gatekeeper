@@ -2,8 +2,9 @@
 implementation in any language can recompute every hash from the bytes on disk. Newlines are written
 as LF on every platform, so a log is byte-identical wherever it was produced.
 
-Phase 3 chains events; phase 4 adds Ed25519 signatures (with the decision tokens), which is what
-stops a forger who rewrites inputs, recomputes the decisions and re-seals the whole chain."""
+Each event is also signed with the gate's Ed25519 key. The chain alone only proves internal
+consistency: a forger with write access can rewrite an event, recompute the decisions and re-seal
+every hash. The signature is what they cannot produce."""
 
 from __future__ import annotations
 
@@ -14,17 +15,23 @@ from typing import Any, Iterator
 from ..core import Event
 from ..core.digest import digest
 from ..core.strictjson import jcs, loads_strict
+from .tokens import SIGNATURE_DOMAIN, KeyRing, Verifier, b64, unb64
 
 GENESIS = "sha256:" + "0" * 64
 _BODY_KEYS = ("body", "kind", "prev", "seq")
 
 
-def seal(event: Event, prev: str) -> dict[str, Any]:
+def seal(event: Event, prev: str, keyring: KeyRing | None = None) -> dict[str, Any]:
     body = {"body": dict(event.body), "kind": event.kind, "prev": prev, "seq": event.seq}
-    return {**body, "record_hash": digest("dag/event/v1", body)}
+    record_hash = digest("dag/event/v1", body)
+    sealed = {**body, "record_hash": record_hash}
+    if keyring is not None:
+        sealed["signature"] = b64(keyring.sign(SIGNATURE_DOMAIN + record_hash.encode("ascii")))
+    return sealed
 
 
-def verify_chain(records: list[dict[str, Any]]) -> list[str]:
+def verify_chain(records: list[dict[str, Any]], verifier: Verifier | None = None) -> list[str]:
+    """Chain integrity, and signatures too when a public key is supplied."""
     problems: list[str] = []
     prev = GENESIS
     for index, record in enumerate(records):
@@ -41,6 +48,12 @@ def verify_chain(records: list[dict[str, Any]]) -> list[str]:
             problems.append(f"event {index}: broken link to previous event")
         if record.get("record_hash") != recomputed:
             problems.append(f"event {index}: record hash does not match contents")
+        if verifier is not None:
+            signature = record.get("signature")
+            if not isinstance(signature, str):
+                problems.append(f"event {index}: unsigned")
+            elif not verifier.verify_bytes(unb64(signature), SIGNATURE_DOMAIN + recomputed.encode("ascii")):
+                problems.append(f"event {index}: signature does not verify")
         prev = record.get("record_hash")
     return problems
 
@@ -59,7 +72,8 @@ def events_of(records: list[dict[str, Any]]) -> list[Event]:
 class EventLog:
     """One file, one chain. Callers hold the session lock; this class only appends."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, keyring: KeyRing | None = None) -> None:
+        self.keyring = keyring
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.records: list[dict[str, Any]] = []
@@ -77,7 +91,7 @@ class EventLog:
         return len(self.records)
 
     def append(self, event: Event) -> dict[str, Any]:
-        record = seal(event, self._prev)
+        record = seal(event, self._prev, self.keyring)
         with self.path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(jcs(record) + "\n")
             handle.flush()

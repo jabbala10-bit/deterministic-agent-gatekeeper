@@ -63,13 +63,13 @@ class LedgerState:
     seq: int
     labels: tuple[str, ...]
     committed: tuple[tuple[str, int], ...]
-    reserved: tuple[tuple[int, str, tuple[tuple[str, int], ...]], ...]  # (reservation, action hash, deltas)
+    reserved: tuple[tuple[int, str, tuple[tuple[str, int], ...], int], ...]  # reservation, action, deltas, expiry
     approvals: tuple[str, ...]
 
     def counters(self) -> dict[str, int]:
         """Committed spend plus everything currently reserved: what a cap must be measured against."""
         totals = dict(self.committed)
-        for _, _, deltas in self.reserved:
+        for _, _, deltas, _ in self.reserved:
             for name, amount in deltas:
                 totals[name] = totals.get(name, 0) + amount
         return totals
@@ -146,10 +146,13 @@ def apply(state: LedgerState, event: Event, counter_names: Sequence[str]) -> Led
         reservation = body.get("reservation")
         if type(reservation) is not int or reservation < 0:
             raise LedgerError("bad_reservation")
-        if any(existing == reservation for existing, _, _ in state.reserved):
+        if any(existing == reservation for existing, _, _, _ in state.reserved):
             raise LedgerError("already_reserved")
+        expires_ms = body.get("expires_ms")
+        if type(expires_ms) is not int or not 0 <= expires_ms <= MAX_SAFE_INT:
+            raise LedgerError("bad_expiry")
         deltas = _deltas(body, counter_names)
-        reserved = tuple(sorted(state.reserved + ((reservation, action_hash, deltas),)))
+        reserved = tuple(sorted(state.reserved + ((reservation, action_hash, deltas, expires_ms),)))
         return _replace(state, seq=seq, reserved=reserved)
 
     if event.kind == "settled":
@@ -160,7 +163,7 @@ def apply(state: LedgerState, event: Event, counter_names: Sequence[str]) -> Led
         labels = body.get("labels", [])
         if type(labels) is not list or not all(matches(NAME_RE, label) for label in labels):
             raise LedgerError("bad_labels")
-        match = [deltas for existing, _, deltas in state.reserved if existing == reservation]
+        match = [deltas for existing, _, deltas, _ in state.reserved if existing == reservation]
         if not match:
             raise LedgerError("nothing_reserved")
         remaining = tuple(entry for entry in state.reserved if entry[0] != reservation)

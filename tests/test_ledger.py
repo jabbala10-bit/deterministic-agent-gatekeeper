@@ -29,7 +29,7 @@ def test_reserved_money_counts_before_it_is_committed():
     state = fold("sess-1", COUNTERS, events(
         opened(),
         ("decided", {"decision": {}, "envelope": {}, "facts": []}),
-        ("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {"refunded_minor": 20000}, "reservation": 1}),
+        ("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {"refunded_minor": 20000}, "expires_ms": 1_790_000_030_000, "reservation": 1}),
     ))
     assert state.counters() == {"refunded_minor": 20000}
     assert state.committed == (("refunded_minor", 0),)
@@ -38,7 +38,7 @@ def test_reserved_money_counts_before_it_is_committed():
 def test_committing_moves_a_reservation_and_applies_labels():
     state = fold("sess-1", COUNTERS, events(
         opened(),
-        ("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {"refunded_minor": 20000}, "reservation": 1}),
+        ("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {"refunded_minor": 20000}, "expires_ms": 1_790_000_030_000, "reservation": 1}),
         ("settled", {"labels": ["private_data"], "outcome": "committed", "reservation": 1}),
     ))
     assert state.counters() == {"refunded_minor": 20000}
@@ -49,7 +49,7 @@ def test_committing_moves_a_reservation_and_applies_labels():
 def test_releasing_returns_the_budget_and_applies_nothing():
     state = fold("sess-1", COUNTERS, events(
         opened(),
-        ("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {"refunded_minor": 20000}, "reservation": 1}),
+        ("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {"refunded_minor": 20000}, "expires_ms": 1_790_000_030_000, "reservation": 1}),
         ("settled", {"labels": [], "outcome": "released", "reservation": 1}),
     ))
     assert state.counters() == {"refunded_minor": 0} and state.labels == ()
@@ -58,9 +58,9 @@ def test_releasing_returns_the_budget_and_applies_nothing():
 def test_labels_only_ever_accumulate():
     state = fold("sess-1", COUNTERS, events(
         opened(),
-        ("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {}, "reservation": 1}),
+        ("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {}, "expires_ms": 1_790_000_030_000, "reservation": 1}),
         ("settled", {"labels": ["private_data"], "outcome": "committed", "reservation": 1}),
-        ("reserved", {"action_hash": "sha256:" + "22" * 32, "counters": {}, "reservation": 3}),
+        ("reserved", {"action_hash": "sha256:" + "22" * 32, "counters": {}, "expires_ms": 1_790_000_030_000, "reservation": 3}),
         ("settled", {"labels": ["untrusted_input"], "outcome": "committed", "reservation": 3}),
     ))
     assert state.labels == ("private_data", "untrusted_input")
@@ -76,9 +76,10 @@ def test_an_approval_is_single_use():
 
 @pytest.mark.parametrize("bad, code", [
     ([("settled", {"labels": [], "outcome": "committed", "reservation": 9})], "nothing_reserved"),
-    ([("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {"wire_minor": 1}, "reservation": 1})], "bad_reservation"),
+    ([("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {"wire_minor": 1}, "expires_ms": 1_790_000_030_000, "reservation": 1})], "bad_reservation"),
     ([("approval_consumed", {"action_hash": "sha256:" + "44" * 32})], "no_such_approval"),
-    ([("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {}, "reservation": 1}),
+    ([("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {}, "reservation": 1})], "bad_expiry"),
+    ([("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {}, "expires_ms": 1_790_000_030_000, "reservation": 1}),
       ("settled", {"labels": ["private_data"], "outcome": "released", "reservation": 1})], "released_actions_apply_no_labels"),
 ])
 def test_impossible_histories_are_refused(bad, code):
@@ -111,7 +112,7 @@ def test_the_snapshot_is_a_function_of_the_state_and_the_facts():
     fact = EntityRecord.build("Account", "acc-1001", {"frozen": False})
     state = fold("sess-1", COUNTERS, events(
         opened(),
-        ("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {"refunded_minor": 15000}, "reservation": 1}),
+        ("reserved", {"action_hash": "sha256:" + "11" * 32, "counters": {"refunded_minor": 15000}, "expires_ms": 1_790_000_030_000, "reservation": 1}),
     ))
     snapshot = state.snapshot((fact,))
     assert snapshot.counters == (("refunded_minor", 15000),)

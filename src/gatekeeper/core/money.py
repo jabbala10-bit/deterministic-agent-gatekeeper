@@ -48,10 +48,15 @@ def canonical_money(value: object, *, currencies: tuple[str, ...], min_minor: in
     return {"amount_minor": minor, "currency": currency}
 
 
-def format_minor(amount_minor: int, currency: str) -> str:
-    """Canonical decimal text, for demo output and executor-facing rendering."""
+def decimal_text(amount_minor: int, currency: str) -> str:
+    """The canonical decimal spelling of an amount: what the executor is handed back."""
     exponent = CURRENCY_EXPONENT[currency]
     if exponent == 0:
-        return f"{amount_minor} {currency}"
+        return str(amount_minor)
     whole, fraction = divmod(amount_minor, 10**exponent)
-    return f"{whole}.{fraction:0{exponent}d} {currency}"
+    return f"{whole}.{fraction:0{exponent}d}"
+
+
+def format_minor(amount_minor: int, currency: str) -> str:
+    """Canonical decimal text with its currency, for demo output."""
+    return f"{decimal_text(amount_minor, currency)} {currency}"

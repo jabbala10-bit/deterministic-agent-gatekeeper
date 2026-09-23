@@ -13,9 +13,9 @@ from .money import CURRENCY_EXPONENT
 from .strictjson import MAX_SAFE_INT
 from .syntax import BUNDLE_RE, CURRENCY_RE, ID_RE, NAME_RE, SCHEME_RE, TOOL_RE, TYPE_RE, matches
 
-ARG_KINDS = ("email", "enum", "id", "int", "money", "template", "text", "url")
+ARG_KINDS = ("email", "enum", "id", "int", "money", "path", "template", "text", "url")
 PARAM_KINDS = ("enum", "id", "int", "text")  # what a template parameter may be
-RESOURCE_ARG_KINDS = ("email", "id", "template", "url")
+RESOURCE_ARG_KINDS = ("email", "id", "path", "template", "url")
 ATTR_KINDS = {"bool": "Boolean", "int": "Long", "string": "String"}
 URL_SCHEMES = ("http", "https")
 DERIVATIONS = ("host_suffixes",)
@@ -65,9 +65,13 @@ class ArgSpec:
     schemes: tuple[str, ...] = ()
     allow_ip: bool = False
     templates: dict[str, dict[str, "ArgSpec"]] = field(default_factory=dict)
+    under: str | None = None
+    optional: bool = False
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"type": self.kind}
+        if self.optional:
+            out["optional"] = True
         if self.kind == "int":
             out.update(min=self.min, max=self.max)
         elif self.kind == "enum":
@@ -78,6 +82,8 @@ class ArgSpec:
             out.update(currencies=list(self.currencies), min_minor=self.min_minor, max_minor=self.max_minor)
         elif self.kind == "url":
             out.update(allow_ip=self.allow_ip, schemes=list(self.schemes))
+        elif self.kind == "path" and self.under:
+            out["under"] = self.under
         elif self.kind == "template":
             out["templates"] = {name: {"params": {p: s.to_json() for p, s in params.items()}}
                                 for name, params in self.templates.items()}
@@ -133,6 +139,22 @@ def _parse_params(spec: Any, where: str) -> dict[str, ArgSpec]:
 
 def _parse_arg(spec: Any, where: str) -> ArgSpec:
     _require(type(spec) is dict and spec.get("type") in ARG_KINDS, f"{where}: type must be one of {ARG_KINDS}")
+    optional = spec.get("optional", False)
+    _require(type(optional) is bool, f"{where}.optional: expected a boolean")
+    spec = {key: value for key, value in spec.items() if key != "optional"}
+    kind = spec["type"]
+    if optional:
+        return _replace_optional(_parse_arg_inner(spec, where))
+    return _parse_arg_inner(spec, where)
+
+
+def _replace_optional(parsed: ArgSpec) -> ArgSpec:
+    return ArgSpec(parsed.kind, parsed.min, parsed.max, parsed.values, parsed.max_len, parsed.currencies,
+                   parsed.min_minor, parsed.max_minor, parsed.schemes, parsed.allow_ip, parsed.templates,
+                   parsed.under, True)
+
+
+def _parse_arg_inner(spec: Any, where: str) -> ArgSpec:
     kind = spec["type"]
     if kind == "int":
         _keys(spec, {"type", "min", "max"}, where)
@@ -162,6 +184,12 @@ def _parse_arg(spec: Any, where: str) -> ArgSpec:
         _require(all(scheme in URL_SCHEMES for scheme in schemes), f"{where}: schemes must be within {URL_SCHEMES}")
         _require(type(spec["allow_ip"]) is bool, f"{where}.allow_ip: expected a boolean")
         return ArgSpec(kind, schemes=schemes, allow_ip=spec["allow_ip"])
+    if kind == "path":
+        _require(spec.keys() <= {"type", "under"} and "type" in spec, f"{where}: bad keys")
+        under = spec.get("under")
+        _require(under is None or (type(under) is str and under.startswith("/") and len(under) < 4096),
+                 f"{where}.under: expected an absolute path")
+        return ArgSpec(kind, under=under)
     if kind == "template":
         _keys(spec, {"type", "templates"}, where)
         _require(type(spec["templates"]) is dict and len(spec["templates"]) > 0, f"{where}.templates: expected a non-empty object")
@@ -266,7 +294,7 @@ class Manifest:
         labels = _names(obj["labels"], NAME_RE, "labels")
         groups = _names(obj["action_groups"], TYPE_RE, "action_groups")
 
-        _require(type(obj["counters"]) is dict and len(obj["counters"]) > 0, "counters: expected a non-empty object")
+        _require(type(obj["counters"]) is dict, "counters: expected an object")  # a bundle may have no budgets
         counters: dict[str, int] = {}
         for counter_name in sorted(obj["counters"]):
             _require(matches(NAME_RE, counter_name), f"counters: bad name {counter_name!r}")
@@ -353,7 +381,8 @@ class Manifest:
             }},
             "approval": {"type": "Record", "required": False, "attributes": {"action_hash": _STRING}},
             "args": {"type": "Record", "attributes": {
-                name: spec.context_type() for name, spec in tool.args.items()}},
+                name: (dict(spec.context_type(), required=False) if spec.optional else spec.context_type())
+                for name, spec in tool.args.items()}},
         }}
 
     def check_snapshot(self, snap: Any) -> None:

@@ -2,20 +2,22 @@
 
 ## Status of this code
 
-Research and portfolio software, built in phases. **Phases 1 to 3 are a decision core with a session
-ledger, not a deployed control.** Until phase 4 lands, it does not enforce anything by itself:
+Research and portfolio software, built in phases. **Phases 1 to 4 give a decision core, a session
+ledger and an enforcement point.** It is still not a supported product, and these gaps are real:
 
-- ledger events are hash-chained but **not signed**, so a forger with write access who rewrites
-  inputs, recomputes the decisions and re-seals the whole chain is not caught by hashing alone;
-- there is **no enforcement point** yet, so nothing stops a caller from ignoring a DENY, or from
-  executing a tool and never settling the reservation;
-- a crashed executor **leaks its reservation**, holding budget until something releases it. There is
-  no sweeper yet;
-- names are **not resolved**. The gate rules on the canonical host; pinning the resolved address and
-  refusing private space at connect time is the executor's job in phase 4, which is why a name such
-  as 127.0.0.1.nip.io is out of scope here.
+- the gate's signing key is generated on first use and **never rotated**. Key rotation, escrow and
+  revocation are not implemented;
+- the ledger is **local files**. There is no external anchoring, so an attacker who owns the host
+  and the key owns the history;
+- the proxy is **in the request path**, so if it fails the agent fails. It has no rate limiting,
+  no backpressure and no upstream health checking;
+- **denials are coarse by design.** An agent learns only that it was denied, which means an operator
+  has to read the ledger to know why;
+- a tool whose arguments the manifest does not model **cannot be called at all** through the proxy;
+- **sweeping is manual.** `gatekeeper sweep` releases expired reservations; nothing runs it for you.
 
-Do not put it in front of real money or real customer data before phase 4.
+Do not put it in front of real money or real customer data without solving key management, ledger
+durability and operational monitoring first.
 
 ## Threat model
 

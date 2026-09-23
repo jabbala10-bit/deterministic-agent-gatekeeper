@@ -12,18 +12,22 @@ properties that make such a gate trustworthy to an examiner: **determinism you c
 
 - Any past decision re-derives from its record on another machine, hash-exact.
 - Any policy change can be measured against history before it ships (phase 5).
-- What executes is provably what was checked (enforced at the boundary in phase 4).
+- What executes is provably what was checked, enforced at the MCP boundary with a signed token.
 
 In the portfolio, Orchestra AI is the runtime, TrustOS is the enforcement boundary, and the
 Gatekeeper is the decision core that proves it decides the same way every time.
 
-**Phases 1 to 3 are here**: the pure core, the canonicalisers, and the session ledger.
+**Phases 1 to 4 are here**: the pure core, the canonicalisers, the session ledger, and the
+enforcement point.
 
 ## What is proven (measured in this repo)
 
 | Exit criterion | Result |
 |---|---|
 | Golden vectors | **401**: 136 ALLOW, 162 DENY, 103 REQUIRE_APPROVAL |
+| Enforcement against a server we did not write | The proxy runs in front of the published `@modelcontextprotocol/server-filesystem`: its **14 tools are filtered to the 3** the manifest declares, a sandbox escape never reaches it, and a file lands on disk **only after a human approves that exact call**, once |
+| Execution is the checked action | The gate rebuilds the canonical action from its own record, so the executor is handed `{"amount":"150.00"}` even when the agent wrote `"150.0"`; tokens are single-use, bound to one action, and expire |
+| Signatures catch a coherent forgery | A forger who rewrites an argument, recomputes the decision honestly and re-seals every hash produces a ledger that replays cleanly, and fails signature verification |
 | Budget spent exactly once under load | **100 concurrent EUR 200 refunds against a EUR 500 cap: exactly 2 execute**, 98 escalate, EUR 400 committed |
 | Snapshots are derived, not trusted | Replay folds the ledger and re-derives every snapshot; deleting a settled spend and re-sealing the chain is caught |
 | Known-bypass corpus 100% refused | **85 attempts, 0 reach ALLOW.** 77 are denied outright with an exact reason code; 8 lookalike destinations escalate to a human instead |
@@ -33,12 +37,12 @@ Gatekeeper is the decision core that proves it decides the same way every time.
 | Identical decision hashes across 10k runs | **10,000** randomised decisions reproduce exactly and match an independent oracle |
 | Identical across separate processes | Fresh processes under `PYTHONHASHSEED` 0, 1, 42 and random re-derive corpus digest `sha256:7661a483…` |
 | Stated intent, not just stable output | The corpus generator refuses to write when the gate disagrees with `spec/oracle.py`, which is written without Cedar |
-| Tests catch real regressions | `make mutants` breaks the reason sort, the fail-closed rule, core purity and the session lock in a scratch copy; the suite catches all four |
+| Tests catch real regressions | `make mutants` breaks the reason sort, fail-closed, core purity, the session lock, single-use tokens and egress pinning in a scratch copy; the suite catches all six |
 | Same result on other platforms | CI re-derives the corpus on Linux x86_64, Linux arm64, macOS arm64 and Windows |
 | An upgrade is classified, not absorbed | On Python 3.13 (Unicode 15.1.0) every verdict is unchanged while every hash moves. `make identity` calls that an identity change, not a regression |
 | Latency (1 vCPU sandbox, Python 3.12) | p50 **0.53 ms**, p99 **0.91 ms** per decision, including canonicalisation and up to two engine evaluations |
 
-156 tests, about 24 seconds.
+205 tests, about 26 seconds. The seven that drive a real MCP server skip when `npx` is absent.
 
 ## Quickstart
 
@@ -47,6 +51,7 @@ uv sync
 make verify          # tests, then the demo and a replay of its log
 make mutants         # sabotage the core three ways; each must be caught
 make identity        # does this runtime still decide the same way?
+make mcp             # drive a real published MCP server through the proxy (needs npx)
 ```
 
 `make demo` runs the scripted EU bank-servicing walkthrough and replays its ledger:
@@ -159,13 +164,68 @@ Three properties fall out of that shape:
 Counters are declared in the manifest and each tool names the argument that feeds one, so the core
 knows nothing about refunds (ADR-008).
 
+## The enforcement point
+
+The agent talks to the proxy and to nothing else. The proxy speaks newline-delimited JSON-RPC to an
+**unmodified** MCP server, relays everything except `tools/call`, and filters `tools/list` to the
+tools the manifest declares, so the agent is never shown a tool it could not call.
+
+```
+agent ──tools/call──▶ proxy ──▶ gate.submit()  ──ALLOW──▶ signed token
+                                     │                        │
+                                  DENY / REQUIRE_APPROVAL     ▼
+                                     │              gate.execute(token)
+                                     ▼                  rebuilds the canonical action
+                        isError result, reason           pins the resolved address
+                        codes only, correlation id       ──▶ unmodified MCP server
+```
+
+A token is an Ed25519 signature over `{action_hash, expires_ms, reservation, session_id}`. Redeeming
+it does not take arguments: the gate rebuilds the canonical action from its own record, so the
+caller cannot execute anything other than what was checked. It is single use, because the
+reservation it names closes on settlement, and it expires, so `gatekeeper sweep` can return the
+budget a crashed executor left held.
+
+What a refusal tells the agent is deliberately narrow:
+
+```
+gatekeeper: INVALID_ARGUMENTS:path:path_outside_sandbox (decision sha256:f583f480576d)
+gatekeeper: APPROVAL_REQUIRED for action sha256:2e2004da... (decision sha256:a91c...)
+gatekeeper: DENIED (decision sha256:d2275eea1472)
+```
+
+Faults in the agent's own input come back verbatim, because they help it correct itself. Policy
+outcomes collapse to `DENIED` or `APPROVAL_REQUIRED` with a correlation id: an injected agent must
+not be able to use denials to map the policy. The reasons stay in the ledger (ADR-009).
+
+### Putting it in front of a real server
+
+```bash
+gatekeeper proxy --bundle policies/filesystem --session sess-local \
+  -- npx -y @modelcontextprotocol/server-filesystem /tmp/gatekeeper-fs-demo
+```
+
+`policies/filesystem/` is a bundle for that published server: reads inside a sandbox are allowed,
+paths are canonicalised and confined before the server sees them, writes need a human approval, and
+once the session has read a file (untrusted input) writes are refused outright. To wire it into an
+MCP client such as Claude Code, register that same command as the server:
+
+```bash
+claude mcp add banking -- uv run --directory /path/to/deterministic-agent-gatekeeper \
+  gatekeeper proxy --bundle policies/filesystem --session sess-local \
+  -- npx -y @modelcontextprotocol/server-filesystem /tmp/gatekeeper-fs-demo
+```
+
+The proxy is exercised against the real server by `make mcp`; the Claude Code registration above
+follows its documented `claude mcp add` form but has not been run in this repository's CI.
+
 ## The five invariants
 
 | # | Invariant | Enforced by | Proven by |
 |---|---|---|---|
 | 1 | **Purity**: `decide()` does no I/O, reads no clock, draws no randomness | `core/` imports nothing that can; time and state enter as recorded inputs | AST lint over `core/`; fresh-process corpus replays |
 | 2 | **Replayability**: every decision re-derives, and every snapshot is re-derived from the session's own events | Hash-chained ledger; the snapshot is a pure fold plus the recorded facts | 401 golden vectors; demo-ledger replay; forged and truncated ledgers |
-| 3 | **Check equals execute**: only the canonical action runs | One parse into typed structure; `action_hash` over it; approvals bind to that hash | Equivalence classes collapse to one hash; `urllib` differential; an approval for EUR 400 does not cover EUR 450 |
+| 3 | **Check equals execute**: only the canonical action runs | One parse into typed structure; a signed single-use token; execution rebuilds the action from the record rather than from the caller | Equivalence classes collapse to one hash; the executor receives canonical arguments; a token cannot be repointed, reused or outlived |
 | 4 | **Fail closed**: errors, missing data and unknown tools deny | Any engine diagnostic, `NoDecision`, invalid input or snapshot means DENY with a code | A test where the raw engine says Allow and the gate says DENY; 85 bypass attempts |
 | 5 | **Monotone guardrails**: no permit or approval overrides a forbid | A forbid short-circuits before the approval path | An approved exfiltration is still denied. The symbolic widening check arrives in phase 5 |
 
@@ -194,8 +254,11 @@ to write when a computed verdict disagrees with `spec/oracle.py`.
 ```
 src/gatekeeper/core/     pure: strictjson (RFC 8785), digest, model, manifest (→ Cedar schema),
                          url, money, canonical, ledger (fold), bundle, decide
-src/gatekeeper/shell/    impure: loader, hash-chained event log, session (one writer), gate (clock,
-                         reserve/settle), replay, demo
+src/gatekeeper/shell/    impure: loader, signed event log, session (one writer), gate (clock,
+                         reserve/settle, tokens), tokens (Ed25519), executor (address pinning),
+                         proxy (MCP), replay, demo
+policies/filesystem/     a bundle for the published MCP filesystem server
+examples/                a minimal MCP server, used by the proxy tests
 policies/bank-servicing/ manifest.json · entities.json (config only) · policies.cedar
 spec/                    oracle · scenarios · bypasses · corpus · gen_vectors · mutants ·
                          check_gate_identity · vectors/
@@ -217,9 +280,10 @@ docs/adr/                ADR-001 … ADR-007
   is an executor concern by design.
 - **No Public Suffix List.** Allowlisting a suffix covers everything beneath it, so allowlisting a
   public suffix would be a broad grant. Suffix entities are policy: reviewed, hashed and diffable.
-- **Records are chained, not signed.** Replay catches a forged input whose recorded decision does not
-  follow from it, even when the chain is re-sealed (tested). A forger who also recomputes decisions
-  is stopped only by the signatures in phase 4.
+- **Signing keys are generated, never rotated.** The gate mints a key on first use; rotation, escrow
+  and revocation are not implemented, and the ledger is local files with no external anchoring.
+- **The proxy is in the request path.** No rate limiting, no backpressure, no upstream health checks.
+- **Sweeping is manual.** `gatekeeper sweep` releases expired reservations; nothing schedules it.
 - **Refusal instead of coverage.** Internationalised local parts and IP literals are refused rather
   than handled. That is over-blocking, and it is measured rather than hidden.
 - **Replay needs the same gate identity.** Gate, canonical form, engine, Unicode and IDNA versions
@@ -242,7 +306,7 @@ docs/adr/                ADR-001 … ADR-007
 | 1 | Pure core, RFC 8785 hashing, three verdicts, stable policy ids, replay | **Done** |
 | 2 | URL, money and recipient canonicalisers; named templates; known-bypass corpus | **Done** |
 | 3 | Session ledger: labels, reserve→commit budgets, one writer per session | **Done** |
-| 4 | MCP proxy on `tools/call`; signed execution tokens; executor-side IP pinning; reservation sweeper | Works unmodified with Claude Code; arguments edited after approval are rejected |
+| 4 | MCP proxy on `tools/call`; signed execution tokens; executor-side IP pinning; reservation sweeper | **Done** |
 | 5 | `replay` and `diff` in CI; symbolic tightening check | A widening PR fails with a concrete counterexample |
 | 6 | AgentDojo with and without the gate; latency; cross-platform replay matrix | Published numbers, including where it over-blocks |
 
@@ -256,6 +320,7 @@ docs/adr/                ADR-001 … ADR-007
 - [ADR-006](docs/adr/ADR-006-canonicalise-urls-into-structure.md): Canonicalise URLs into structure, and split the SSRF defence
 - [ADR-007](docs/adr/ADR-007-named-templates-instead-of-command-strings.md): Named templates instead of canonicalising command languages
 - [ADR-008](docs/adr/ADR-008-session-ledger-with-reserve-then-settle.md): An event-sourced session ledger, with budgets reserved before execution
+- [ADR-009](docs/adr/ADR-009-enforcement-at-the-mcp-boundary.md): Enforce at the MCP boundary, with a signed token per checked action
 
 ## License
 

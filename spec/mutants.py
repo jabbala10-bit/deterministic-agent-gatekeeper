@@ -30,6 +30,16 @@ MUTANTS: list[tuple[str, list[tuple[str, str, str]], list[str]]] = [
     ("core reads the clock", [
         ("src/gatekeeper/core/decide.py", "import unicodedata\n", "import time\nimport unicodedata\n"),
     ], ["tests/test_invariants.py"]),
+    ("a token can be redeemed twice", [
+        ("src/gatekeeper/shell/gate.py",
+         "            if payload.reservation not in open_reservations:",
+         "            if False and payload.reservation not in open_reservations:"),
+    ], ["tests/test_enforcement.py"]),
+    ("egress is not pinned before the tool runs", [
+        ("src/gatekeeper/shell/gate.py",
+         "            egress_pins(tool, action.args, self._resolver)  # refuses non-public addresses",
+         "            pass  # refuses non-public addresses"),
+    ], ["tests/test_enforcement.py"]),
     ("budget is read outside the session lock", [
         ("src/gatekeeper/shell/gate.py",
          "        with session.transaction():\n            snapshot = session.state.snapshot(facts)\n",

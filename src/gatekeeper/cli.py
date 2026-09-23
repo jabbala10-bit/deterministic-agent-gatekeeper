@@ -12,8 +12,9 @@ from pathlib import Path
 from .core import EntityRecord, Envelope, Snapshot, decide
 from .core.ledger import fold
 from .core.strictjson import loads_strict
-from .shell import Gate, events_of, load_bundle, read_log, replay
+from .shell import Gate, McpProxy, UpstreamServer, events_of, load_bundle, read_log, replay
 from .shell.demo import run_demo
+from .shell.tokens import KeyRing
 
 DEFAULT_BUNDLE = "policies/bank-servicing"
 DEFAULT_SESSIONS = ".out/sessions"
@@ -58,8 +59,44 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return _print_replay(replay(records, bundle, args.session))
 
 
+def _verifier(args: argparse.Namespace):
+    key = Path(getattr(args, "key", None) or Path(args.sessions) / "gate-key.pem")
+    return KeyRing.load_or_create(key).verifier if key.exists() else None
+
+
 def cmd_replay(args: argparse.Namespace) -> int:
-    return _print_replay(replay(list(read_log(args.ledger)), load_bundle(args.bundle), args.session))
+    verifier = _verifier(args)
+    if verifier is None:
+        print("note: no gate key found, so signatures are not checked")
+    return _print_replay(replay(list(read_log(args.ledger)), load_bundle(args.bundle), args.session, verifier))
+
+
+def cmd_proxy(args: argparse.Namespace) -> int:
+    """Sit between an MCP client and an unmodified MCP server, enforcing the gate on tools/call."""
+    upstream_command = [part for part in args.upstream if part != "--"]
+    if not upstream_command:
+        print("give the upstream server command after --", file=sys.stderr)
+        return 2
+    gate = Gate(load_bundle(args.bundle), args.sessions)
+    upstream = UpstreamServer(upstream_command)
+    proxy = McpProxy(gate, upstream, session_id=args.session, principal=args.principal)
+    try:
+        proxy.serve(sys.stdin, sys.stdout)
+    finally:
+        upstream.close()
+    return 0
+
+
+def cmd_pending(args: argparse.Namespace) -> int:
+    pending = Gate(load_bundle(args.bundle), args.sessions).pending(args.session)
+    print(json.dumps(pending, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_sweep(args: argparse.Namespace) -> int:
+    released = Gate(load_bundle(args.bundle), args.sessions).sweep(args.session)
+    print(f"released {len(released)} expired reservation(s): {released}")
+    return 0
 
 
 def cmd_state(args: argparse.Namespace) -> int:
@@ -137,6 +174,22 @@ def main(argv: list[str] | None = None) -> int:
     child = add("replay", "re-derive every decision and snapshot in a session ledger", cmd_replay)
     child.add_argument("ledger")
     child.add_argument("--session", required=True)
+    child.add_argument("--sessions", default=DEFAULT_SESSIONS)
+    child.add_argument("--key", help="gate public key file; signatures are checked when it is found")
+
+    child = add("proxy", "enforce the gate in front of an unmodified MCP server", cmd_proxy)
+    child.add_argument("--session", required=True)
+    child.add_argument("--principal", default="support-bot")
+    child.add_argument("--sessions", default=DEFAULT_SESSIONS)
+    child.add_argument("upstream", nargs=argparse.REMAINDER, help="-- command to run the MCP server")
+
+    child = add("pending", "list decisions waiting on a human", cmd_pending)
+    child.add_argument("--session", required=True)
+    child.add_argument("--sessions", default=DEFAULT_SESSIONS)
+
+    child = add("sweep", "release reservations whose token has expired", cmd_sweep)
+    child.add_argument("--session", required=True)
+    child.add_argument("--sessions", default=DEFAULT_SESSIONS)
 
     child = add("state", "print the state folded from a session ledger", cmd_state)
     child.add_argument("ledger")

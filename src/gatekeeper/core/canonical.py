@@ -18,10 +18,10 @@ from .digest import digest
 from .errors import Rejection
 from .manifest import ArgSpec, Manifest, ToolSpec
 from .model import Envelope
-from .money import canonical_money
+from .money import canonical_money, decimal_text
 from .strictjson import StrictJSONError, loads_strict
-from .syntax import DOMAIN_LABEL_RE, ID_RE, LOCAL_PART_RE, NAME_RE, matches
-from .url import canonical_host, canonical_url, host_suffixes
+from .syntax import DOMAIN_LABEL_RE, ID_RE, LOCAL_PART_RE, NAME_RE, RESOURCE_ID_RE, matches
+from .url import canonical_host, canonical_path, canonical_url, host_suffixes, rebuild
 
 MAX_ARGUMENTS_BYTES = 64 * 1024
 # Explicit bidi embeddings, overrides and isolates ("Trojan Source"). Marks such as U+200E stay legal.
@@ -71,11 +71,13 @@ def canonicalize(env: Envelope, manifest: Manifest) -> CanonicalAction:
         raise Rejection("INVALID_ARGUMENTS:not_an_object")
     if any(name not in tool.args for name in raw):
         raise Rejection("INVALID_ARGUMENTS:unknown_argument")
-    if any(name not in raw for name in tool.args):
+    if any(name not in raw for name, spec in tool.args.items() if not spec.optional):
         raise Rejection("INVALID_ARGUMENTS:missing_argument")
 
     args: dict[str, Any] = {}
     for name in sorted(tool.args):
+        if name not in raw:
+            continue  # an optional argument the agent did not send stays out of the canonical action
         try:
             args[name] = _canonical_value(tool.args[name], raw[name])
         except Rejection as err:
@@ -85,7 +87,7 @@ def canonicalize(env: Envelope, manifest: Manifest) -> CanonicalAction:
     resource_id = args[tool.resource_from]
     if tool.resource_field:
         resource_id = resource_id[tool.resource_field]
-    if not matches(ID_RE, resource_id):
+    if not matches(RESOURCE_ID_RE, resource_id):
         raise Rejection("INVALID_ARGUMENTS:bad_resource_id")
     parents: tuple[tuple[str, str], ...] = ()
     if tool.parent_type:
@@ -116,6 +118,24 @@ def context_args(tool: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
     return {name: context_value(tool.args[name], value) for name, value in args.items()}
 
 
+def wire_value(spec: ArgSpec, value: Any) -> Any:
+    """The canonical value rendered back into the shape the tool expects.
+
+    The executor is handed this, never the agent's original text, which is what makes "what runs is
+    what was checked" a property of the code rather than a promise."""
+    if spec.kind == "url":
+        return rebuild(value)
+    if spec.kind == "email":
+        return value["address"]
+    if spec.kind == "money":
+        return {"amount": decimal_text(value["amount_minor"], value["currency"]), "currency": value["currency"]}
+    return value
+
+
+def wire_arguments(tool: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
+    return {name: wire_value(tool.args[name], value) for name, value in args.items()}
+
+
 def _canonical_value(spec: ArgSpec, value: Any) -> Any:
     if spec.kind == "id":
         if type(value) is not str or ID_RE.match(value) is None:
@@ -139,6 +159,8 @@ def _canonical_value(spec: ArgSpec, value: Any) -> Any:
         return canonical_money(value, currencies=spec.currencies, min_minor=spec.min_minor, max_minor=spec.max_minor)
     if spec.kind == "url":
         return canonical_url(value, schemes=spec.schemes, allow_ip=spec.allow_ip)
+    if spec.kind == "path":
+        return canonical_path(value, under=spec.under)
     if spec.kind == "template":
         return _canonical_template(spec, value)
     raise Rejection("unsupported_kind")

@@ -136,6 +136,33 @@ def host_suffixes(host: str) -> list[str]:
     return [".".join(labels[index:]) for index in range(len(labels) - 1)]
 
 
+def canonical_path(value: object, *, under: str | None = None) -> str:
+    """An absolute POSIX path with dot segments removed and duplicate separators collapsed.
+
+    The gate enforces the sandbox itself rather than trusting the tool to do it, so
+    /srv/allowed/../../etc/passwd is refused here, not at the far end."""
+    if type(value) is not str:
+        raise Rejection("not_text")
+    if len(value) > 4096:
+        raise Rejection("too_long")
+    text = unicodedata.normalize("NFC", value)
+    for char in text:
+        code = ord(char)
+        if code < 0x20 or code == 0x7F or 0x80 <= code <= 0x9F:
+            raise Rejection("control_character")
+        if char == "\\":
+            raise Rejection("illegal_character")
+        if unicodedata.category(char) == "Cn":
+            raise Rejection("unassigned_code_point")
+    if not text.startswith("/"):
+        raise Rejection("path_must_be_absolute")
+    collapsed = "/" + "/".join(segment for segment in text.split("/") if segment not in ("", "."))
+    path = _remove_dot_segments(collapsed)
+    if under is not None and path != under and not path.startswith(under.rstrip("/") + "/"):
+        raise Rejection("path_outside_sandbox")
+    return path
+
+
 def canonical_url(value: object, *, schemes: tuple[str, ...], allow_ip: bool = False) -> dict[str, object]:
     if type(value) is not str:
         raise Rejection("not_text")

@@ -1,7 +1,7 @@
 BUNDLE := policies/bank-servicing
 SESSIONS := .out/sessions
 
-.PHONY: verify test vectors demo bench mutants identity
+.PHONY: verify test vectors demo bench mutants identity mcp proxy
 
 verify: test demo
 
@@ -28,3 +28,9 @@ mutants:
 
 identity:
 	uv run python spec/check_gate_identity.py
+
+mcp:
+	uv run pytest tests/test_mcp_integration.py -v
+
+proxy:
+	@echo "usage: uv run gatekeeper proxy --bundle $(BUNDLE) --session <id> -- <mcp server command>"

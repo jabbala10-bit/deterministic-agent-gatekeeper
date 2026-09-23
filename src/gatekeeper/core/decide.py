@@ -24,6 +24,9 @@ from .digest import digest
 from .errors import Rejection
 from .model import Decision, Envelope, Snapshot
 
+# The gate identity versions the decision function, not the product. Phase 4 added an enforcement
+# point and signatures without changing how anything is decided, so this stayed at 0.3.0 while the
+# package moved to 0.4.0, and the phase 3 corpus still reproduces exactly.
 GATE_VERSION = "0.3.0"
 CANON_VERSION = 3
 

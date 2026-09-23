@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "bundle": "filesystem",
+  "principal_type": "Agent",
+  "labels": ["untrusted_input"],
+  "counters": {},
+  "action_groups": ["Read", "Write"],
+  "config_entity_types": {},
+  "snapshot_entity_types": {},
+  "tools": {
+    "list_directory": {
+      "groups": ["Read"],
+      "resource": {"type": "Dir", "from": "path"},
+      "args": {"path": {"type": "path", "under": "/tmp/gatekeeper-fs-demo"}},
+      "result_labels": []
+    },
+    "read_text_file": {
+      "groups": ["Read"],
+      "resource": {"type": "File", "from": "path"},
+      "args": {
+        "path": {"type": "path", "under": "/tmp/gatekeeper-fs-demo"},
+        "head": {"type": "int", "min": 1, "max": 1000, "optional": true},
+        "tail": {"type": "int", "min": 1, "max": 1000, "optional": true}
+      },
+      "result_labels": ["untrusted_input"]
+    },
+    "write_file": {
+      "groups": ["Write"],
+      "resource": {"type": "File", "from": "path"},
+      "args": {
+        "path": {"type": "path", "under": "/tmp/gatekeeper-fs-demo"},
+        "content": {"type": "text", "max_len": 100000}
+      },
+      "result_labels": []
+    }
+  }
+}

@@ -33,8 +33,9 @@ class ReplayReport:
                 and not (self.chain_problems or self.ledger_problems or self.mismatches))
 
 
-def replay(records: list[dict[str, Any]], bundle: PolicyBundle, session_id: str | None = None) -> ReplayReport:
-    report = ReplayReport(records=len(records), chain_problems=verify_chain(records))
+def replay(records: list[dict[str, Any]], bundle: PolicyBundle, session_id: str | None = None,
+           verifier: Any = None) -> ReplayReport:
+    report = ReplayReport(records=len(records), chain_problems=verify_chain(records, verifier))
     if not records:
         return report
     session_id = session_id or records[0].get("body", {}).get("session_id", "")
