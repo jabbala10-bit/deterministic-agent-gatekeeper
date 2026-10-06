@@ -16,7 +16,7 @@ classifiers = [
 # The engine version is part of every decision's gate identity, so it is pinned exactly.
 dependencies = [
     "cedarpy==4.12.0",
-    "cryptography==46.0.4",
+    "cryptography==50.0.2",
     "idna==3.20",
 ]
 
